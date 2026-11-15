@@ -30,13 +30,13 @@ Groningen area, so it works without a PC and without mobile data.
   (`app/src/main/assets/profiles/bromfiets.brf`).
 - Never uses cycle paths closed to mopeds (`moped=no`), roads with a compulsory moped path
   (`moped=use_sidepath`), motorroads or motorways. Uses fiets/bromfietspaden (`moped=designated`).
-- **Vehicle** (☰ → Vehicle): 🛵 bromfiets with yellow plate (45 km/h), 🛵 snorfiets with blue plate
+- **Vehicle** (Settings → Vehicle): 🛵 bromfiets with yellow plate (45 km/h), 🛵 snorfiets with blue plate
   (25 km/h, uses fietspaden `mofa=*`, not G13 / compulsory-cycle-path roads), or 🚲 e-bike up to
   25 km/h without plate (bicycle rules). One profile, variable `vehicle`.
-- **Road access layer** (☰ → 🗺): colours every road by what the router believes for your vehicle:
+- **Road access layer** (☰ → 🗺 Show road access): colours every road by what the router believes for your vehicle:
   green allowed, yellow moped/cycle path, red not allowed. It is computed on the phone from the
   routing data with the routing profile itself.
-- **Your road corrections** (☰ → ✏ Edit road access, or long-press → "This road"): tap a road
+- **Your road corrections** (Settings → ✏ Edit road access, or long-press → "This road"): tap a road
   section (junction to junction) to force it *allowed*, *allowed both directions* (ignore one-way)
   or *forbidden*. The dialog shows the OSM tags behind the decision. Corrections are applied inside
   BRouter (patched jar, `tools/brouter-patch/`), drawn as dashed blue/purple lines, and kept across
@@ -52,7 +52,9 @@ Groningen area, so it works without a PC and without mobile data.
 - **ASAP orders** keep a safety margin before their promised time. **Exact-time orders**
   ("req.: 17:30") are never delivered early; arriving after the requested time is penalised, with
   a hard limit of +10 min.
-- **Auto order priority** (☰ → 🔀): shortest total route / hottest orders first (least time left,
+- **Settings** (☰ → ⚙): a full screen with sections (Delivery, Roads & map, App). The ☰ menu on
+  the map only has voice, clear all stops, the road access layer, and skip/end while navigating.
+- **Auto order priority** (Settings): shortest total route / hottest orders first (least time left,
   distance still counts) / on time versus the promised times (default).
 - Manual override (▲/▼, long-press = next), undo for *Delivered*, cancel/restore orders, and full
   editing of an order.

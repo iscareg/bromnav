@@ -540,125 +540,57 @@ class MainActivity : AppCompatActivity(), LocationListener {
         startLeg()
     }
 
+    /** The ☰ menu on the map: only what is needed while riding; everything else is in Settings. */
     private fun openMenu(anchor: View) {
-        if (simple) { openSimpleMenu(anchor); return }
         val pm = PopupMenu(this, anchor)
-        pm.menu.add(0, 1, 0, "Type an address…")
-        pm.menu.add(0, 9, 0, "📷 Scan receipts…")
-        pm.menu.add(0, 2, 0, "Stats & history")
-        pm.menu.add(0, 3, 0, if (voice.enabled) "Voice: on (tap to mute)" else "Voice: off (tap to enable)")
+        pm.menu.add(0, 3, 0, if (voice.enabled) "🔊 Voice: on (tap to mute)" else "🔇 Voice: off (tap to enable)")
+        if (!simple && mode == Mode.PLAN && (store.pending().isNotEmpty() || store.cancelled().isNotEmpty())) pm.menu.add(0, 6, 0, "🗑 Clear all stops")
+        pm.menu.add(0, 21, 0, if (showLegal) "🗺 Road access layer: ON (tap to hide)" else "🗺 Show road access")
         if (mode == Mode.NAV) {
-            if (legTarget != null) pm.menu.add(0, 4, 0, "Skip this stop (do it later)")
-            pm.menu.add(0, 5, 0, "End navigation")
-        } else pm.menu.add(0, 6, 0, "Clear all stops")
-        pm.menu.add(0, 7, 0, "Remove all avoid marks")
-        pm.menu.add(0, 31, 0, "🔀 Auto order: ${OrderMode.current.label}")
-        addRoadItems(pm)
-        pm.menu.add(0, 10, 0, "🧭 Switch to simple nav")
-        pm.menu.add(0, 11, 0, "🌓 Theme: ${Pal.choice(this)} (tap to change)")
-        pm.menu.add(0, 12, 0, "⬇ Update maps from internet")
-        if (BuildConfig.DEBUG_TOOLS && mode == Mode.NAV) pm.menu.add(0, 8, 0, if (simulating) "Stop simulation" else "Simulate ride (debug)")
+            if (!simple && legTarget != null) pm.menu.add(0, 4, 0, "⏭ Skip this stop (do it later)")
+            pm.menu.add(0, 5, 0, "⏹ End navigation")
+        }
+        pm.menu.add(0, 40, 0, "⚙ Settings…")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
-                12 -> confirmMapDownload(restart = true)
-                1 -> openSearch()
-                9 -> openScanner()
-                2 -> startActivity(Intent(this, StatsActivity::class.java))
                 3 -> voice.enabled = !voice.enabled
+                6 -> confirmClear()
+                21 -> setLegal(!showLegal, false)
                 4 -> skip()
                 5 -> endNav()
-                6 -> confirmClear()
-                7 -> { store.nogos.clear(); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoid marks removed") }
-                8 -> if (simulating) stopSimulation() else simulate()
-                10 -> setAppMode(true)
-                11 -> cycleTheme()
-                else -> onRoadItem(item.itemId)
+                40 -> openSettings()
             }
             true
         }
         pm.show()
     }
 
-    /** auto -> dark -> light -> auto; AppCompat recreates the activity with the new palette. */
-    private fun cycleTheme() {
-        val next = when (Pal.choice(this)) { "auto" -> "dark"; "dark" -> "light"; else -> "auto" }
-        Pal.setChoice(this, next)
-        toast("Theme: $next")
-    }
+    // ------------------------------------------------------------------ settings screen
 
-    private fun openSimpleMenu(anchor: View) {
-        val pm = PopupMenu(this, anchor)
-        pm.menu.add(0, 1, 0, "🔍 Search address…")
-        pm.menu.add(0, 3, 0, if (voice.enabled) "Voice: on (tap to mute)" else "Voice: off (tap to enable)")
-        if (mode == Mode.NAV) pm.menu.add(0, 5, 0, "End navigation")
-        pm.menu.add(0, 7, 0, "Remove all avoid marks")
-        addRoadItems(pm)
-        pm.menu.add(0, 10, 0, "🛵 Switch to delivery mode")
-        pm.menu.add(0, 11, 0, "🌓 Theme: ${Pal.choice(this)} (tap to change)")
-        pm.menu.add(0, 12, 0, "⬇ Update maps from internet")
-        if (BuildConfig.DEBUG_TOOLS && mode == Mode.NAV) pm.menu.add(0, 8, 0, if (simulating) "Stop simulation" else "Simulate ride (debug)")
-        pm.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                1 -> openSearch()
-                3 -> voice.enabled = !voice.enabled
-                5 -> endNav()
-                7 -> { store.nogos.clear(); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoid marks removed") }
-                8 -> if (simulating) stopSimulation() else simulate()
-                10 -> setAppMode(false)
-                11 -> cycleTheme()
-                12 -> confirmMapDownload(restart = true)
-                else -> onRoadItem(item.itemId)
-            }
-            true
+    private var settingsSnapshot: Triple<Vehicle, OrderMode, Int>? = null
+    private val settingsLauncher = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { res ->
+        // plain settings changed in the settings screen: apply them here
+        settingsSnapshot?.let { (v, o, rv) ->
+            if (v != Vehicle.current) { worker.execute { roadLayer?.clear() }; roadsChanged("Vehicle changed") }
+            else if (rv != RoadOverrides.version) roadsChanged()
+            if (o != OrderMode.current && !simple && !store.manualOrder && store.pending().size >= 2) autoOrder()
         }
-        pm.show()
-    }
-
-    // ------------------------------------------------------------------ vehicle, road access layer, road corrections
-
-    private fun addRoadItems(pm: PopupMenu) {
-        pm.menu.add(0, 20, 0, "${Vehicle.current.icon} Vehicle: ${Vehicle.current.label}")
-        pm.menu.add(0, 21, 0, if (showLegal) "🗺 Road access layer: ON (tap to hide)" else "🗺 Show road access layer")
-        pm.menu.add(0, 22, 0, if (editRoads) "✏ Stop editing roads" else "✏ Edit road access (tap a road)")
-        val n = RoadOverrides.all().size
-        if (n > 0) pm.menu.add(0, 23, 0, "Remove all my road corrections ($n)")
-    }
-
-    private fun chooseOrderMode() {
-        val ms = OrderMode.entries
-        val help = mapOf(OrderMode.SHORTEST to "least riding in total; times only break ties",
-            OrderMode.HOTTEST to "least time left first, distance still counts",
-            OrderMode.ON_TIME to "as few late orders as possible, with a safety margin")
-        AlertDialog.Builder(this).setTitle("Auto order priority")
-            .setSingleChoiceItems(ms.map { "${it.label}\n   ${help[it]}" }.toTypedArray(), ms.indexOf(OrderMode.current)) { d, w ->
-                d.dismiss()
-                if (ms[w] == OrderMode.current) return@setSingleChoiceItems
-                OrderMode.set(this, ms[w]); toast("Auto order: ${ms[w].label}")
-                if (!store.manualOrder && store.pending().size >= 2) autoOrder()
-            }.show()
-    }
-
-    private fun onRoadItem(id: Int) {
-        when (id) {
-            31 -> chooseOrderMode()
-            20 -> chooseVehicle()
-            21 -> setLegal(!showLegal, false)
-            22 -> if (editRoads) setLegal(showLegal, false) else setLegal(true, true)
-            23 -> AlertDialog.Builder(this).setMessage("Remove all ${RoadOverrides.all().size} road corrections (allowed / forbidden sections)?")
-                .setPositiveButton("Remove") { _, _ -> RoadOverrides.clear(); roadsChanged() }.setNegativeButton("Cancel", null).show()
+        settingsSnapshot = null
+        when (res.data?.getStringExtra(SettingsActivity.EXTRA_ACTION)) {
+            "edit_roads" -> setLegal(true, true)
+            "clear_avoid" -> { store.nogos.clear(); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoid marks removed", force = true) }
+            "update_maps" -> confirmMapDownload(restart = true)
+            "mode_simple" -> setAppMode(true)
+            "mode_delivery" -> setAppMode(false)
+            "simulate" -> if (simulating) stopSimulation() else simulate()
         }
     }
 
-    private fun chooseVehicle() {
-        val vs = Vehicle.entries
-        AlertDialog.Builder(this).setTitle("What do you ride?")
-            .setSingleChoiceItems(vs.map { "${it.icon}  ${it.label}" }.toTypedArray(), vs.indexOf(Vehicle.current)) { d, w ->
-                d.dismiss()
-                if (vs[w] == Vehicle.current) return@setSingleChoiceItems
-                Vehicle.set(this, vs[w]); toast("Routing for: ${vs[w].label}")
-                worker.execute { roadLayer?.clear() }
-                roadsChanged("Vehicle changed")
-            }.show()
+    private fun openSettings() {
+        settingsSnapshot = Triple(Vehicle.current, OrderMode.current, RoadOverrides.version)
+        settingsLauncher.launch(Intent(this, SettingsActivity::class.java)
+            .putExtra(SettingsActivity.EXTRA_SIMPLE, simple).putExtra(SettingsActivity.EXTRA_AVOID, store.nogos.size)
+            .putExtra(SettingsActivity.EXTRA_NAV, mode == Mode.NAV))
     }
 
     private fun setLegal(show: Boolean, edit: Boolean) {
