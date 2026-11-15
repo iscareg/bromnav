@@ -42,13 +42,17 @@ object AddressSearch {
         val dlg = AlertDialog.Builder(a).setTitle(title).setView(box).setNegativeButton("Close", null).create()
 
         var localHits: List<PdokGeocoder.Address> = emptyList()
+        var bookHits: List<PdokGeocoder.Address> = emptyList()   // offline address book
         var onlineHits: List<PdokGeocoder.Address> = emptyList()
         var addressFirst = false
         fun showList(items: List<PdokGeocoder.Address>, labels: List<String>) {
             results.clear(); results.addAll(items); la.clear(); la.addAll(labels); la.notifyDataSetChanged()
         }
         fun render() {
-            val items = if (addressFirst) onlineHits + localHits else localHits + onlineHits
+            // online addresses that the offline book already shows are not listed twice
+            val known = bookHits.map { it.label.lowercase() }.toSet()
+            val online = onlineHits.filter { it.label.removePrefix("🏠 ").lowercase() !in known }
+            val items = if (addressFirst) bookHits + online + localHits else localHits + bookHits + online
             showList(items, items.map { it.label.removeSuffix(" Groningen") })
         }
         fun showHistory() = showList(history, history.map { "🕘 " + it.label.removeSuffix(" Groningen") })
@@ -60,8 +64,15 @@ object AddressSearch {
             override fun onTextChanged(s: CharSequence?, x: Int, y: Int, z: Int) {}
             override fun afterTextChanged(s: Editable?) {
                 val q = s?.toString()?.trim() ?: ""; val my = ++seq
-                if (q.isEmpty()) { localHits = emptyList(); onlineHits = emptyList(); showHistory(); return }
+                if (q.isEmpty()) { localHits = emptyList(); bookHits = emptyList(); onlineHits = emptyList(); showHistory(); return }
                 addressFirst = q.any { it.isDigit() }
+                // offline addresses: immediately, also without internet
+                val book = PdokGeocoder.book
+                if (book != null && q.length >= 3) local.execute {
+                    if (my != seq) return@execute
+                    val hits = runCatching { book.search(q, near, 6) }.getOrDefault(emptyList()).map { it.copy(label = "🏠 " + it.label) }
+                    ui.post { if (my == seq) { bookHits = hits; render() } }
+                }
                 // offline places: immediately (background thread, stale queries dropped)
                 if (pois != null && q.length >= 2) local.execute {
                     if (my != seq) return@execute

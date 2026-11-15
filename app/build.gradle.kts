@@ -13,9 +13,10 @@ val copyMapData = tasks.register<Sync>("copyMapData") {
     into(layout.buildDirectory.dir("mapassets"))
 }
 
-// Place search index (all builds; ~0.5 MB): data/pois.tsv.gz from tools/build_pois.py
+// Place search index + offline address book (all builds; ~0.5 + 1.2 MB):
+// data/pois.tsv.gz (tools/build_pois.py), data/addresses.tsv.gz (tools/build_addresses.py)
 val copyPoiData = tasks.register<Sync>("copyPoiData") {
-    from(rootProject.file("data")) { include("pois.tsv.gz") }
+    from(rootProject.file("data")) { include("pois.tsv.gz", "addresses.tsv.gz") }
     into(layout.buildDirectory.dir("poiassets"))
 }
 
@@ -26,8 +27,8 @@ android {
         applicationId = "nl.bromnav"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.5.2"
+        versionCode = 8
+        versionName = "0.6.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     // Release signing key lives outside the repo (~/.bromnav-release/signing.properties).

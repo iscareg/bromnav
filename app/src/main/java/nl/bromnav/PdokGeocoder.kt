@@ -11,6 +11,9 @@ object PdokGeocoder {
 
     private const val BASE = "https://api.pdok.nl/bzk/locatieserver/search/v3_1/free"
 
+    /** offline address book (loaded at app start); used before the online service */
+    @Volatile var book: AddressBook? = null
+
     /** Searches the delivery municipality first; falls back to all of NL if nothing matches. */
     fun search(q: String, near: LatLon = Config.RESTAURANT, rows: Int = 8): List<Address> {
         val local = query(q, near, rows, "&fq=" + URLEncoder.encode("gemeentenaam:${Config.MUNICIPALITY}", "UTF-8"))
@@ -37,7 +40,17 @@ object PdokGeocoder {
      * Exact BAG lookup by postcode + house number ("17", "32A", "120-2"), as printed on receipts.
      * Returns null if PDOK has no such address.
      */
-    fun byPostcode(postcode: String, houseNo: String): Address? {
+    fun byPostcode(postcode: String, houseNo: String, street: String? = null): Address? {
+        book?.let { b ->
+            b.lookupFuzzy(postcode, houseNo, street)?.let { return it }
+            if (b.hasPostcode(postcode)) return null
+        }
+        if (!Regex("""^\d{4}\s?[A-Za-z]{2}$""").matches(postcode.trim())) return null
+        return byPostcodeOnline(postcode, houseNo)
+    }
+
+    /** online BAG lookup (for postcodes outside the offline address book) */
+    fun byPostcodeOnline(postcode: String, houseNo: String): Address? {
         val num = Regex("""^\d+""").find(houseNo)?.value ?: return null
         val q = "postcode:${postcode.uppercase()} AND huisnummer:$num"
         val url = "$BASE?q=${URLEncoder.encode(q, "UTF-8")}&fq=type:adres&rows=20&fl=weergavenaam,centroide_ll,straatnaam,huis_nlt"

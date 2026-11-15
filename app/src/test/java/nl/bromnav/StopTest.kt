@@ -24,8 +24,8 @@ class StopTest {
     }
 
     @Test fun paymentIcon() {
-        assertEquals("💶 CASH", Stop(1, "x", LatLon(0.0, 0.0), payment = "cash").paymentIcon())
-        assertEquals("✅ paid", Stop(1, "x", LatLon(0.0, 0.0), payment = "online").paymentIcon())
+        assertEquals("💶\u00A0CASH", Stop(1, "x", LatLon(0.0, 0.0), payment = "cash").paymentIcon())
+        assertEquals("✅\u00A0paid", Stop(1, "x", LatLon(0.0, 0.0), payment = "online").paymentIcon())
         assertEquals("", Stop(1, "x", LatLon(0.0, 0.0)).paymentIcon())
     }
 }

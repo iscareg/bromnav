@@ -7,4 +7,5 @@ B=$(curl -s https://build-metadata.protomaps.dev/builds.json | python3 -c "impor
 ../tools/vendor/pmtiles extract "https://build.protomaps.com/$B" tiles/groningen.pmtiles.new --bbox=6.15,52.95,7.25,53.55 --maxzoom=15
 mv tiles/groningen.pmtiles.new tiles/groningen.pmtiles
 python3 ../tools/build_pois.py
+python3 ../tools/build_addresses.py
 echo "updated; now run tools/push_data.sh"

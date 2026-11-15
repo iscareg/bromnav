@@ -63,9 +63,10 @@ class ScanActivity : AppCompatActivity() {
         const val EXTRA_STOPS = "stops"          // JSON array of Stop.toJson()
         const val EXTRA_TYPE_INSTEAD = "type"    // user wants to type an address instead
         const val EXTRA_EXISTING = "existing"    // keys ("postcode no") already in the run
+        const val EXTRA_EXISTING_ORDERS = "existingOrders"   // order numbers (last 3 digits) already in the run
         private const val CONFIRMATIONS = 2
         /** identical address readings (not necessarily consecutive) needed before the BAG check */
-        private const val ADDRESS_STREAK = 3
+        private const val ADDRESS_STREAK = 2   // postcode + number, then checked in the address book
     }
 
     /**
@@ -119,6 +120,27 @@ class ScanActivity : AppCompatActivity() {
     private var allBuzzed = false
     private var frame = 0
     @Volatile private var paused = false
+    /** rotation in which the receipt was last read; frames are only tried in that one until it fails a few times */
+    @Volatile private var rotLock: Int? = null
+    @Volatile private var rotMisses = 0
+    /** street as read for each postcode|number candidate (display + cross-check) */
+    private val streets = HashMap<String, String>()
+    /** candidates the address book rejected (misreads) and receipts already added: never voted for again */
+    private val rejected = HashSet<String>()
+    private val doneOrders = HashSet<String>()
+    private val existingOrders = LinkedHashSet<String>()
+    /** a receipt that is already in the run / added was just seen: tell the user (no second scan) */
+    private var dupSeenAt = 0L
+    private var dupLabel = ""
+    private fun sawDuplicate(label: String) {
+        val now = System.currentTimeMillis()
+        if (now - dupSeenAt > 4000) {          // short double buzz, at most every 4 s
+            runCatching { (getSystemService(VIBRATOR_SERVICE) as? Vibrator)?.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 40, 80, 40), -1)) }
+        }
+        dupSeenAt = now; dupLabel = label
+    }
+    private val orderFull = HashMap<String, String>()
+    private fun orderShort(o: String) = Stop.shortOrder(o)
 
     private val added = ArrayList<Stop>()
     private val existing = HashSet<String>()
@@ -136,6 +158,7 @@ class ScanActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         Pal.init(this)
         intent.getStringArrayExtra(EXTRA_EXISTING)?.let { existing.addAll(it) }
+        intent.getStringArrayExtra(EXTRA_EXISTING_ORDERS)?.let { existingOrders.addAll(it); doneOrders.addAll(it) }
         savedInstanceState?.getString("added")?.let { s -> JSONArray(s).let { a -> for (i in 0 until a.length()) added.add(Stop.fromJson(a.getJSONObject(i))) } }
         // Back = Done: receipts already added must never be lost
         onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
@@ -170,8 +193,8 @@ class ScanActivity : AppCompatActivity() {
         bottom.addView(list, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
 
         countTv = TextView(this).apply {
-            textSize = 14f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; background = card(Color.parseColor("#B0000000"), 12)
-            setPadding(dp(10), dp(4), dp(10), dp(4)); visibility = View.GONE
+            textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            background = card(Color.parseColor("#E61B5E20"), 12); setPadding(dp(14), dp(6), dp(14), dp(6)); visibility = View.GONE
         }
         bottom.addView(countTv, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(8) })
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -218,7 +241,7 @@ class ScanActivity : AppCompatActivity() {
                 if (paused || media == null) { proxy.close(); return@setAnalyzer }
                 // cycle the 4 orientations over frames: receipts are held sideways / upside down
                 val base = proxy.imageInfo.rotationDegrees
-                val extra = intArrayOf(0, 180, 90, 270)[frame++ % 4]
+                val extra = rotLock ?: intArrayOf(0, 180, 90, 270)[frame++ % 4]
                 // upright image size (as shown on screen)
                 val w = if (base % 180 == 0) proxy.width else proxy.height
                 val h = if (base % 180 == 0) proxy.height else proxy.width
@@ -226,6 +249,8 @@ class ScanActivity : AppCompatActivity() {
                     .addOnSuccessListener { t ->
                         val lines = ReceiptOcr.toLines(t)
                         val f = ReceiptParser.parseFields(lines)
+                        // stay in the rotation that works; go back to trying all four after 4 failures
+                        if (f != null) { rotLock = extra; rotMisses = 0 } else if (rotLock != null && ++rotMisses >= 4) rotLock = null
                         drawBoxes(lines, f, extra, w, h)
                         onFields(f)
                     }
@@ -243,15 +268,27 @@ class ScanActivity : AppCompatActivity() {
         if (paused || r == null) return
         var changed = false
         if (r.hasAddress && bag == null && bagState != "checking") {
-            // the full string (postcode|number|street) must be read identically ADDRESS_STREAK times
-            if (addr.add("${r.postcode}|${r.houseNo}|${r.street ?: ""}")) lookupBag()
-            changed = true
+            val k = "${r.postcode}|${r.houseNo}"
+            val already = "${r.postcode} ${r.houseNo}" in existing || added.any { it.key() == "${r.postcode} ${r.houseNo}" }
+            if (already) sawDuplicate("${streets[k] ?: r.street ?: ""} ${r.houseNo}".trim())
+            if (k !in rejected && !already) {
+                r.street?.let { st -> if ((streets[k]?.length ?: 0) < st.length) streets[k] = st }
+                // the same postcode + number read ADDRESS_STREAK times, then checked in the address book
+                if (addr.add(k)) lookupBag()
+                changed = true
+            }
         }
         if (r.deliveryTime != null) { time.add(r.deliveryTime); changed = true }
         if (r.asap) asapSeen++
         if (r.asap) req.add("ASAP") else if (r.requestedTime != null) req.add(r.requestedTime)
         if (r.payment != null) { pay.add(r.payment); changed = true }
-        if (r.orderNo != null) { order.add(r.orderNo); changed = true }
+        // only the last 3 digits matter for delivery (the prefix is what OCR misreads); keep the longest full reading
+        if (r.orderNo != null && orderShort(r.orderNo) in doneOrders && order.locked == null && bag == null) sawDuplicate("#" + orderShort(r.orderNo))
+        if (r.orderNo != null && orderShort(r.orderNo) !in doneOrders) {
+            val k = orderShort(r.orderNo)
+            if ((orderFull[k]?.length ?: 0) < r.orderNo.length) orderFull[k] = r.orderNo
+            order.add(k); changed = true
+        }
         if (r.phone != null) phone.add(r.phone)
         if (r.name != null) name.add(r.name)
         if (r.note != null && note.locked == null) {
@@ -304,21 +341,36 @@ class ScanActivity : AppCompatActivity() {
     }
 
     private fun lookupBag() {
-        val (pc, no) = addr.locked!!.split("|")
+        val key = addr.locked!!
+        val (pc, no) = key.split("|")
         bagState = "checking"; render()
         net.execute {
-            val res = runCatching { PdokGeocoder.byPostcode(pc, no) }
+            val read = streets[key]
+            val res = runCatching { PdokGeocoder.byPostcode(pc, no, read) }
             ui.post {
                 if (isFinishing) return@post
                 val a = res.getOrNull()
                 when {
-                    a != null -> { bag = a; bagState = "" }
+                    // a misread digit can hit another existing address: the street on the receipt must match too
+                    a != null && read != null && !sameStreet(read, a.street) -> { bagState = "mismatch"; rejected.add(key); addr.reset() }
+                    a != null -> { bag = withUnit(a, no); bagState = "" }
                     res.isFailure -> { bagState = "offline"; addr.reset() }
-                    else -> { bagState = "notfound"; addr.reset() }   // misread: keep scanning
+                    else -> { bagState = "notfound"; rejected.add(key); addr.reset() }   // misread: never this one again
                 }
                 render()
             }
         }
+    }
+
+    /** OCR'd street vs official street name: tolerant of a few misread letters and dropped words */
+    private fun sameStreet(read: String, official: String) = AddressBook.streetMatches(read, official)
+
+    /** keeps the room / apartment part printed on the receipt ("46-1") when the register only knows "46" */
+    private fun withUnit(a: PdokGeocoder.Address, printed: String): PdokGeocoder.Address {
+        val p = printed.uppercase(); val official = a.houseNo.uppercase()
+        if (p == official || !p.startsWith(official) || p.length <= official.length) return a
+        val no = printed.lowercase()
+        return a.copy(label = a.label.replaceFirst(" ${a.houseNo},", " $no,"), houseNo = no)
     }
 
     private fun translateNote() {
@@ -341,10 +393,11 @@ class ScanActivity : AppCompatActivity() {
         val addrValue = a?.let { "${it.street} ${it.houseNo} · ${Regex("""\d{4}[A-Z]{2}""").find(it.label)?.value ?: ""}" +
             if (stopKey(it) in existing || added.any { s -> s.key() == stopKey(it) }) "  ⚠ already in run" else "" }
         val addrTent = when (bagState) {
-            "checking" -> "checking BAG…"
-            "notfound" -> "not in BAG, rescanning"
-            "offline" -> "no internet for BAG check"
-            else -> addr.best?.split("|")?.let { "${it[2]} ${it[1]}".trim() + "  (${addr.bestCount}/${addr.need})" }
+            "checking" -> "checking address…"
+            "notfound" -> "misread (address does not exist), rescanning"
+            "mismatch" -> "misread (street does not match), rescanning"
+            "offline" -> "address not in offline list and no internet"
+            else -> addr.best?.let { k -> val p = k.split("|"); "${streets[k] ?: ""} ${p[1]}".trim() + "  (${addr.bestCount}/${addr.need})" }
         }
         line(addrTv, a != null, "Address", addrValue, addrTent)
         val kind = req.locked ?: req.best
@@ -368,7 +421,11 @@ class ScanActivity : AppCompatActivity() {
         noteTv.setTextColor(Color.parseColor(if (n != null) Pal.note else grey))
 
         val all = a != null && time.locked != null && order.locked != null
+        val dup = System.currentTimeMillis() - dupSeenAt < 2500
+        if (dup) ui.postDelayed({ if (!isFinishing) render() }, 2600)
+        headTv.setTextColor(Color.parseColor(if (dup) "#e8900c" else Pal.accent))
         headTv.text = when {
+            dup && !all -> "✓ $dupLabel is already added — show the next receipt"
             all -> "All read ✓  — tap Add" + if (BuildConfig.DEBUG_TOOLS) " [${overlay.boxes.size}]" else ""
             !hasData() -> "Point the camera at the receipt"
             else -> "Keep the receipt in view…" + if (BuildConfig.DEBUG_TOOLS) " [${overlay.boxes.size} boxes]" else ""
@@ -378,9 +435,14 @@ class ScanActivity : AppCompatActivity() {
             runCatching { (getSystemService(VIBRATOR_SERVICE) as? Vibrator)?.vibrate(VibrationEffect.createOneShot(90, VibrationEffect.DEFAULT_AMPLITUDE)) }
         }
         addBtn.text = if (all) "Add ✓" else "Add with this…"
-        if (added.isNotEmpty()) {
+        // always visible: which orders are already done, so nothing is scanned twice in a rush
+        val inRun = existingOrders.filter { o -> added.none { it.orderShort() == o } }
+        if (added.isNotEmpty() || inRun.isNotEmpty()) {
             countTv.visibility = View.VISIBLE
-            countTv.text = "${added.size} receipt${if (added.size == 1) "" else "s"} added · scan the next or tap Done"
+            countTv.text = listOfNotNull(
+                if (added.isNotEmpty()) "✓ Added now: " + added.joinToString("  ") { if (it.orderNo.isNotEmpty()) "#${it.orderShort()}" else it.streetName() } else null,
+                if (inRun.isNotEmpty()) "Already in run: " + inRun.joinToString("  ") { "#$it" } else null,
+            ).joinToString("\n")
         }
     }
 
@@ -391,7 +453,7 @@ class ScanActivity : AppCompatActivity() {
     /** Adds the current receipt; if something is missing, opens a form prefilled with what was read. */
     private fun addCurrent() {
         val a = bag
-        if (a != null && time.locked != null && order.locked != null) { commit(a, order.locked!!, time.locked!!); return }
+        if (a != null && time.locked != null && order.locked != null) { commit(a, orderFull[order.locked!!] ?: order.locked!!, time.locked!!); return }
         paused = true
         val cand = addr.best
         if (a == null && cand != null) {
@@ -399,7 +461,7 @@ class ScanActivity : AppCompatActivity() {
             val (pc, no) = cand.split("|")
             net.execute {
                 val found = runCatching { PdokGeocoder.byPostcode(pc, no) }.getOrNull()
-                ui.post { if (!isFinishing) { if (found != null) { bag = found; addr.locked = cand }; completeDialog() } }
+                ui.post { if (!isFinishing) { if (found != null) { bag = withUnit(found, no); addr.locked = cand }; completeDialog() } }
             }
             return
         }
@@ -413,25 +475,30 @@ class ScanActivity : AppCompatActivity() {
         fun showAddr() { addrBtn.text = chosen?.let { "📍 ${it.label.removeSuffix(" Groningen")}  (change)" } ?: "📍 Choose address…" }
         showAddr()
         addrBtn.setOnClickListener {
-            val guess = addr.best?.split("|")?.let { "${it[2]} ${it[1]}".trim() } ?: ""
+            val guess = addr.best?.let { k -> "${streets[k] ?: k.split("|")[0]} ${k.split("|")[1]}".trim() } ?: ""
             AddressSearch.show(this, "Address", guess) { chosen = it; showAddr() }
         }
-        val orderEt = EditText(this).apply { hint = "Order number"; setText(order.locked ?: order.best ?: ""); inputType = InputType.TYPE_CLASS_TEXT }
-        val timeEt = EditText(this).apply {
-            hint = "Deliver before (HH:MM)"; inputType = InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME
-            setText(time.locked ?: time.best ?: "")
-        }
+        val orderEt = EditText(this).apply { hint = "Order number"; setText((order.locked ?: order.best)?.let { orderFull[it] ?: it } ?: ""); inputType = InputType.TYPE_CLASS_TEXT }
+        // an order is EITHER as soon as possible (deliver by the printed time) OR for an exact time
         val kind = req.locked ?: req.best
-        val earliestEt = EditText(this).apply {
-            hint = "Exact time: not before (HH:MM) — empty = ASAP"; inputType = InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME
-            setText(if (kind != null && kind != "ASAP") kind else "")
+        var exact = kind != null && kind != "ASAP"
+        val timeEt = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME
+            setText(if (exact) kind else time.locked ?: time.best ?: "")
         }
-        box.addView(addrBtn); box.addView(orderEt); box.addView(timeEt); box.addView(earliestEt)
+        val kindBtn = Button(this).apply { isAllCaps = false; textSize = 16f }
+        fun showKind() {
+            kindBtn.text = if (exact) "⏰ Exact time  (tap for ASAP)" else "⚡ ASAP  (tap for exact time)"
+            timeEt.hint = if (exact) "Exact time (HH:MM), not earlier" else "Deliver by (HH:MM)"
+        }
+        showKind(); kindBtn.setOnClickListener { exact = !exact; showKind() }
+        box.addView(addrBtn); box.addView(orderEt); box.addView(kindBtn); box.addView(timeEt)
         AlertDialog.Builder(this).setTitle("Complete this order").setView(box)
             .setPositiveButton("Add") { _, _ ->
                 val c = chosen
                 if (c == null) { Toast.makeText(this, "An address is needed", Toast.LENGTH_SHORT).show(); paused = false; return@setPositiveButton }
-                commit(c, orderEt.text.toString().trim(), timeEt.text.toString().trim(), earliestEt.text.toString().trim())
+                val t = timeEt.text.toString().trim()
+                commit(c, orderEt.text.toString().trim(), t, if (exact) t else "")
             }
             .setNegativeButton("Back to scanning") { _, _ -> paused = false }
             .setOnCancelListener { paused = false }
@@ -451,12 +518,15 @@ class ScanActivity : AppCompatActivity() {
             note = listOfNotNull(n, noteEn?.let { "🇬🇧 $it" }).joinToString("\n"), name = name.locked ?: name.best ?: "",
             earliest = earliest, payment = pay.locked ?: pay.best ?: "")
         added.add(s)
+        if (orderNo.isNotEmpty()) doneOrders.add(orderShort(orderNo))
+        addr.locked?.let { rejected.add(it) }          // the camera still sees this receipt: don't read it again
         resetReceipt()
     }
 
     private fun resetReceipt() {
         listOf(addr, time, order, note, phone, name, req, pay).forEach { it.reset() }
         bag = null; bagState = ""; noteEn = null; bestNote = null; asapSeen = 0; allBuzzed = false
+        streets.clear(); orderFull.clear()
         paused = false
         render()
     }

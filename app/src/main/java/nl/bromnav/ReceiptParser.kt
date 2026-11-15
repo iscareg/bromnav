@@ -44,7 +44,8 @@ object ReceiptParser {
         val key get() = "$postcode $houseNo"
     }
 
-    private val POSTCODE = Regex("""^\s*([1-9]\d{3})\s?([A-Za-z]{2})\b\s*(.*)$""")
+    // letters may come out as look-alike digits ("9745 0S" for 9745 CS); the address book fixes them
+    private val POSTCODE = Regex("""^\s*([1-9]\d{3})\s?((?=[A-Za-z0-9]{2}\b)(?:[A-Za-z][A-Za-z0-9]|[0-9][A-Za-z]))\b\s*(.*)$""")
     private val STREET = Regex("""^\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'\-]*?[A-Za-zÀ-ÿ.])\s+(\d{1,5})\s*(?:([A-Za-z]{1,2})\b|[-/ ]\s*([A-Za-z0-9]{1,4}))?\s*$""")
     private val PHONE = Regex("""(\+31|0031|0)\s?[1-9](?:[\s-]?\d){8}""")
     private val TIME = Regex("""\b([01]?\d|2[0-3])[:.]([0-5]\d)\b""")
@@ -54,6 +55,7 @@ object ReceiptParser {
     private val LBL_PAY = Regex("""(betaalwijze|betaling|payment)""", RegexOption.IGNORE_CASE)
     private val REQUESTED = Regex("""\(\s*(gevr|req)[a-z]*\.?\s*:?\s*([^)]*)\)""", RegexOption.IGNORE_CASE)
     private val ASAP = Regex("""\b(zsm|asap|z\.s\.m\.)\b""", RegexOption.IGNORE_CASE)
+    private val CUSTOMER = Regex("""^\s*(klant|customer|klantgegevens|bezorgadres|delivery\s*address)\s*:?\s*$""", RegexOption.IGNORE_CASE)
     private val HEADER = Regex("""^\s*(bestelling|order|klant|customer|info|items?)\s*$""", RegexOption.IGNORE_CASE)
     private val NOT_A_STREET = Regex("""(€|\d+\s*[x×]\b|stuks|\bst\)|\bnr\b|tijd|time|betaal|payment|bron|source)""", RegexOption.IGNORE_CASE)
 
@@ -80,40 +82,44 @@ object ReceiptParser {
     fun parse(lines: List<Line>): Receipt? = parseFields(lines)?.takeIf { it.hasAddress }
 
     /** Whatever fields this frame shows (address, time, order nr can come from different frames). */
-    fun parseFields(lines: List<Line>): Receipt? {
-        if (!isHorizontal(lines)) return null
+    fun parseFields(lines0: List<Line>): Receipt? {
+        if (!isHorizontal(lines0)) return null
+        // ML Kit also reads upside-down text, but then "above/below" is reversed: turn the boxes round
+        val lines = if (upsideDown(lines0)) lines0.map { it.copy(left = -it.right, right = -it.left, top = -it.bottom, bottom = -it.top) } else lines0
         val ls = readingOrder(lines.map { it.copy(text = it.text.replace('\u00A0', ' ').trim()) }.filter { it.text.isNotEmpty() })
         if (ls.isEmpty()) return null
 
         // --- address block (optional in a single frame: fields are collected over many frames)
         var postcode: String? = null; var city: String? = null; var street: String? = null; var houseNo: String? = null
         var name: String? = null; var phone: String? = null; var note: String? = null
-        val pcIdx = ls.indices.filter { POSTCODE.matches(ls[it].text) }
-            .maxByOrNull { i -> val rest = POSTCODE.find(ls[i].text)!!.groupValues[3]; if (rest.isNotBlank()) 2 else 1 } ?: -1
-        if (pcIdx >= 0) {
-            val pcM = POSTCODE.find(ls[pcIdx].text)!!
-            postcode = pcM.groupValues[1] + pcM.groupValues[2].uppercase()
+        // postcode candidates: the customer block (under a "Klant"/"Customer" header in the same column)
+        // first; the restaurant's own address in the receipt header is never the customer's
+        fun underCustomerHeader(i: Int): Boolean = (maxOf(0, i - 6) until i).any { h ->
+            CUSTOMER.matches(ls[h].text) && (ls[i].bottom == 0 || (ls[h].left < ls[i].right && ls[h].right > ls[i].left))
+        }
+        // the restaurant block: followed by its phone number / website
+        fun restaurantBlock(i: Int) = (i + 1..minOf(ls.size - 1, i + 3)).any { k ->
+            ls[k].text.filter(Char::isDigit).contains(Config.RESTAURANT_PHONE_DIGITS) || ls[k].text.lowercase().contains(Config.RESTAURANT_WEB)
+        }
+        // two receipts in view: the one in the middle of the picture is meant
+        val midX = if (ls.all { it.bottom == 0 }) 0.0 else (ls.minOf { it.left } + ls.maxOf { it.right }) / 2.0
+        val cands = ls.indices.filter { POSTCODE.matches(ls[it].text) && !restaurantBlock(it) }
+            .sortedWith(compareBy({ if (underCustomerHeader(it)) 0 else 1 }, { Math.abs((ls[it].left + ls[it].right) / 2.0 - midX) },
+                { if (POSTCODE.find(ls[it].text)!!.groupValues[3].isNotBlank()) 0 else 1 }, { it }))
+        var pcIdx = -1
+        for (ci in cands) {
+            val (st, no) = streetFor(ls, ci) ?: continue
+            val pcM = POSTCODE.find(ls[ci].text)!!
+            val pc = pcM.groupValues[1] + pcM.groupValues[2].uppercase()
+            if (isRestaurant(pc, no, st)) continue
+            pcIdx = ci; street = st; houseNo = no; postcode = pc
             city = pcM.groupValues[3].trim().takeIf { it.isNotEmpty() }?.replaceFirstChar { it.uppercase() }
+            break
+        }
+        if (pcIdx >= 0) {
 
-            // street + number: nearest left-aligned line before the postcode that looks like "Street 12a"
-            var stIdx = -1
             val pcLine = ls[pcIdx]
-            fun aligned(l: Line) = pcLine.bottom == 0 || Math.abs(l.left - pcLine.left) < pcLine.h * 2.5
-            for (i in pcIdx - 1 downTo maxOf(0, pcIdx - 4)) {
-                val t = ls[i].text
-                if (STREET.matches(t) && !NOT_A_STREET.containsMatchIn(t) && aligned(ls[i])) { stIdx = i; break }
-            }
-            if (stIdx >= 0) {
-                val m = STREET.find(ls[stIdx].text)!!
-                street = m.groupValues[1].trim()
-                houseNo = m.groupValues[2] + (m.groupValues[3].ifEmpty { m.groupValues[4].let { if (it.isNotEmpty()) "-$it" else "" } }).uppercase()
-            } else {
-                // OCR may join "Street 12" and the postcode on one line
-                val joined = Regex("""^(.*?[A-Za-zÀ-ÿ.])\s+(\d{1,5})\s*([A-Za-z]{0,2})\s+([1-9]\d{3})\s?([A-Za-z]{2})\b""").find(ls[pcIdx].text)
-                if (joined != null) { street = joined.groupValues[1].trim(); houseNo = joined.groupValues[2] + joined.groupValues[3].uppercase() }
-            }
-            if (houseNo == null) postcode = null   // a postcode without a street line is not an address
-
+            val stIdx = streetIdx(ls, pcIdx)
             // name: line just above the street that has no digits and is not a header
             name = (if (stIdx > 0) ls[stIdx - 1].text else null)
                 ?.takeIf { it.none(Char::isDigit) && !HEADER.matches(it) && it.length in 2..40 }
@@ -193,6 +199,67 @@ object ReceiptParser {
         orderNo = orderNo?.replace(Regex("""\s*-\s*"""), "-")
 
         return Receipt(postcode, houseNo, street, city, name, phone, orderNo, time, asap, note, requestedTime, payment)
+    }
+
+    /** Fixed order of things on every receipt, top to bottom (rank, pattern). */
+    private val LANDMARKS = listOf(
+        0 to Regex("""^\s*info\s*$""", RegexOption.IGNORE_CASE),
+        1 to Regex("""^\s*(order\s*n[ro]|ordernr|bestelnummer)""", RegexOption.IGNORE_CASE),
+        2 to Regex("""^\s*(besteld\s*op|ordered)""", RegexOption.IGNORE_CASE),
+        3 to Regex("""^\s*(bezorgtijd|delivery\s*time)""", RegexOption.IGNORE_CASE),
+        4 to Regex("""^\s*(betaalwijze|payment)""", RegexOption.IGNORE_CASE),
+        5 to Regex("""^\s*(klant|customer)\s*$""", RegexOption.IGNORE_CASE),
+        7 to Regex("""^\s*(bestelling|order)\s*$""", RegexOption.IGNORE_CASE),
+    )
+
+    /** true when the landmarks appear bottom-to-top (text read upside down) */
+    fun upsideDown(lines: List<Line>): Boolean {
+        if (lines.all { it.bottom == 0 }) return false
+        val marks = ArrayList<Pair<Int, Int>>()                       // rank, centre y
+        for (l in lines) LANDMARKS.firstOrNull { it.second.containsMatchIn(l.text) }?.let { marks.add(it.first to l.cy) }
+        // postcode line directly above its own "Street 12" line: also reversed
+        for ((i, l) in lines.withIndex()) if (POSTCODE.matches(l.text)) {
+            lines.filter { it !== l && STREET.matches(it.text) && !NOT_A_STREET.containsMatchIn(it.text) && Math.abs(it.left - l.left) < l.h * 2.5 &&
+                Math.abs(it.cy - l.cy) < l.h * 2.2 }.forEach { marks.add(if (it.cy < l.cy) (5 to it.cy) else (5 to it.cy)); marks.add(6 to l.cy) }
+        }
+        var agree = 0; var disagree = 0
+        for (a in marks.indices) for (b in marks.indices) {
+            val (ra, ya) = marks[a]; val (rb, yb) = marks[b]
+            if (ra < rb) { if (ya < yb) agree++ else if (ya > yb) disagree++ }
+        }
+        return disagree > agree
+    }
+
+    /** The restaurant's own address (printed in the receipt header). */
+    fun isRestaurant(postcode: String, houseNo: String, street: String? = null): Boolean {
+        val base = Regex("""^\d+""").find(houseNo)?.value
+        if (postcode == Config.RESTAURANT_POSTCODE && base == Config.RESTAURANT_HOUSENO) return true
+        // misread restaurant header ("9711AE 60", "Schuitendiep 0"): restaurant street + 9711 postcode + a number like 60
+        return street != null && PoiIndex.lev(PoiIndex.norm(street), Config.RESTAURANT_STREET.lowercase(), Config.RESTAURANT_STREET.length, 2) <= 2 &&
+            postcode.startsWith(Config.RESTAURANT_POSTCODE.take(4)) && (base == null || base.length <= 2 && (base.contains('6') || base == "0"))
+    }
+
+    /** index of the "Street 12a" line belonging to postcode line [pcIdx], or -1 */
+    private fun streetIdx(ls: List<Line>, pcIdx: Int): Int {
+        val pcLine = ls[pcIdx]
+        fun aligned(l: Line) = pcLine.bottom == 0 || Math.abs(l.left - pcLine.left) < pcLine.h * 2.5
+        for (i in pcIdx - 1 downTo maxOf(0, pcIdx - 4)) {
+            val t = ls[i].text
+            if (STREET.matches(t) && !NOT_A_STREET.containsMatchIn(t) && aligned(ls[i])) return i
+        }
+        return -1
+    }
+
+    /** street + house number for postcode line [pcIdx] (separate line above, or joined on the same line) */
+    private fun streetFor(ls: List<Line>, pcIdx: Int): Pair<String, String>? {
+        val stIdx = streetIdx(ls, pcIdx)
+        if (stIdx >= 0) {
+            val m = STREET.find(ls[stIdx].text)!!
+            return m.groupValues[1].trim() to (m.groupValues[2] + (m.groupValues[3].ifEmpty { m.groupValues[4].let { if (it.isNotEmpty()) "-$it" else "" } }).uppercase())
+        }
+        // OCR may join "Street 12" and the postcode on one line
+        val joined = Regex("""^(.*?[A-Za-zÀ-ÿ.])\s+(\d{1,5})\s*([A-Za-z]{0,2})\s+([1-9]\d{3})\s?([A-Za-z]{2})\b""").find(ls[pcIdx].text) ?: return null
+        return joined.groupValues[1].trim() to (joined.groupValues[2] + joined.groupValues[3].uppercase())
     }
 
     /** Text of the value belonging to label line [i]: rest of the same line, else the line to its right. */

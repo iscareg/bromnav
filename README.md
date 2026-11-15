@@ -22,6 +22,8 @@ Groningen area, so it works without a PC and without mobile data.
   "tankstation"), ranked by match quality and distance.
 - Mixed with Dutch addresses (PDOK/BAG) and online OSM name search (Photon) for anything else.
 - In delivery mode the search only looks up addresses (receipts always have one).
+- **Offline address book**: about 196,000 addresses of the Groningen area (OpenStreetMap / BAG) in
+  the app, so receipts and typed addresses work without internet. PDOK online is the fallback.
 
 **Legal moped routing (offline)**
 - Embedded [BRouter](https://github.com/abrensch/brouter) with a custom profile
@@ -64,6 +66,12 @@ Groningen area, so it works without a PC and without mobile data.
 - Customer messages are translated Dutch → English on the phone (ML Kit, offline after a
   one-time download).
 - Payment is shown as ✅ prepaid online or 💶 cash.
+- The restaurant's own address in the receipt header is never taken. Upside-down readings and
+  look-alike characters in the postcode ("9745 0S") are repaired, and a misread street is rejected.
+- Receipts already added or already in the run are recognised and rejected, and the list of order
+  numbers already done is always visible.
+- Order numbers show as their last 3 digits ("010") on the map, in the list and in the voice. Room
+  numbers ("46-1") appear on the big house number near the door.
 
 **Riding**
 - Heading-up map with a scooter marker, smoothed GPS (Kalman filter + outlier rejection), and
@@ -108,7 +116,7 @@ tags the version, and publishes a GitHub release (needs the `gh` CLI). The signi
 
 ## Testing tools
 
-- `./gradlew testDebugUnitTest`: 86 unit tests. Logic: solver vs brute force, navigator, route
+- `./gradlew testDebugUnitTest`: 96 unit tests. Logic: solver vs brute force, navigator, route
   parsing, time windows, speed model, receipts, GPS filter, place search, road corrections. Real
   data, when `data/` exists: routing legality for all three vehicles, unreachable destinations,
   road layer, planner. The remote PMTiles test runs with `BROMNAV_NET_TEST=1`.

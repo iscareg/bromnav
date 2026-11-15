@@ -26,7 +26,7 @@ data class Stop(
     /** "online" (prepaid) | "cash" | "" (unknown) */
     var payment: String = "",
 ) {
-    fun paymentIcon() = when (payment) { "online" -> "✅ paid"; "cash" -> "💶 CASH"; else -> "" }
+    fun paymentIcon() = when (payment) { "online" -> "✅\u00A0paid"; "cash" -> "💶\u00A0CASH"; else -> "" }
 
     /** street / number, parsed from the label if PDOK fields are missing (e.g. old data) */
     fun streetName() = street.ifEmpty { Regex("""^(.*?)\s+\d""").find(label)?.groupValues?.get(1) ?: label }
@@ -41,7 +41,15 @@ data class Stop(
         .put("phone", phone).put("note", note).put("name", name)
         .put("earliest", earliest ?: -1L).put("payment", payment)
 
+    /** what matters for delivery: the last 3 digits of the order number ("12345ABC-010" -> "010") */
+    fun orderShort() = shortOrder(orderNo)
+
     companion object {
+        fun shortOrder(o: String): String {
+            val d = Regex("""(\d+)\s*$""").find(o.trim())?.groupValues?.get(1) ?: return o.trim().takeLast(3)
+            return if (d.length >= 3) d.takeLast(3) else d.padStart(3, '0')
+        }
+
         fun fromJson(o: JSONObject) = Stop(
             o.getLong("id"), o.getString("label"), LatLon(o.getDouble("lat"), o.getDouble("lon")),
             o.optString("orderNo"), o.optLong("deadline", -1L).takeIf { it > 0 }, o.optBoolean("delivered"),

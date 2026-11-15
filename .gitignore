@@ -14,3 +14,5 @@ data/profiles/trekking.brf
 tools/vendor/
 *.log
 env.sh
+data/addresses.tsv.gz
+data/addresses_raw.json

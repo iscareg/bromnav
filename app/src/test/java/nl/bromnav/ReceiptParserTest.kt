@@ -101,4 +101,44 @@ class ReceiptParserTest {
         val r = ReceiptParser.parse(ls)!!
         assertEquals("Kade", r.street); assertEquals("0698765432", r.phone); assertNull(r.note)
     }
+
+    private fun ln(t: String, l: Int, top: Int, r: Int, b: Int) = ReceiptParser.Line(t, l, top, r, b)
+
+    /** the restaurant's own address in the header is never taken; the customer block under "Klant" is */
+    @Test fun restaurantHeaderIsSkipped() {
+        val lines = listOf(
+            ln("Schuitendiep 60", 472, 218, 649, 256), ln("9711RE Groningen", 452, 256, 658, 291), ln("050-2043069", 489, 294, 624, 319),
+            ln("www.wabisabigroningen.nl", 407, 326, 699, 359), ln("Info", 532, 396, 572, 425),
+            ln("Ordernr.", 325, 483, 402, 509), ln("11111ABC - 001", 498, 459, 688, 504), ln("Bezorgtijd:", 331, 621, 435, 650),
+            ln("16:45 (gevr.:16:45)", 499, 597, 716, 644), ln("Klant", 520, 704, 568, 729), ln("Anna Voorbeeld", 336, 769, 459, 790),
+            ln("Voorbeeldplein 9", 341, 784, 600, 819), ln("9746 ZX Groningen", 336, 819, 517, 840), ln("+31600000001", 335, 842, 476, 865))
+        val r = ReceiptParser.parseFields(lines)!!
+        assertEquals("9746ZX", r.postcode); assertEquals("9", r.houseNo); assertEquals("Voorbeeldplein", r.street)
+        // misread restaurant header alone is not an address either
+        assertEquals(null, ReceiptParser.parseFields(listOf(ln("Schuitendiep 60", 472, 218, 649, 256), ln("9711AE Groningen", 452, 256, 658, 291),
+            ln("050-2043069", 489, 294, 624, 319)))!!.postcode)
+    }
+
+    /** ML Kit reads upside-down receipts with reversed boxes: still parsed */
+    @Test fun upsideDownText() {
+        val up = listOf(ln("Info", 863, 2468, 955, 2514), ln("22222DEF - 006", 620, 2289, 1027, 2363), ln("Ordernr.", 1260, 1945, 1365, 1981),
+            ln("18:10 (gevr.:18:00)", 521, 1963, 1015, 2041), ln("Bezorgtijd:", 1207, 1716, 1367, 1762), ln("Klant", 870, 1759, 966, 1807),
+            ln("Proefstraat 9a", 1070, 1574, 1355, 1625), ln("9745 CS Groningen", 975, 1498, 1353, 1561), ln("0600000002.", 1103, 1445, 1351, 1490),
+            ln("Bestelling", 810, 1317, 1024, 1374))
+        assertTrue(ReceiptParser.upsideDown(up))
+        val r = ReceiptParser.parseFields(up)!!
+        assertEquals("9745CS", r.postcode); assertEquals("9A", r.houseNo); assertEquals("18:00", r.requestedTime)
+    }
+
+    @Test fun lookalikePostcodeIsKept() {
+        val r = ReceiptParser.parse(listOf(ReceiptParser.Line("Proefstraat 9a"), ReceiptParser.Line("9745 0S Groningen")))!!
+        assertEquals("97450S", r.postcode)          // repaired later by the address book
+    }
+
+    @Test fun shortOrderNumber() {
+        assertEquals("010", Stop.shortOrder("12345ABC-010"))
+        assertEquals("006", Stop.shortOrder("22222DEF - 006"))
+        assertEquals("007", Stop.shortOrder("7"))
+        assertEquals("026", Stop.shortOrder("13579QRS-1026"))
+    }
 }

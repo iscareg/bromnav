@@ -273,14 +273,17 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val cm = getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
         val metered = cm.isActiveNetworkMetered
         AlertDialog.Builder(this).setTitle("Update maps from internet")
-            .setMessage("Downloads the newest routing data (~180 MB, brouter.de), map (~90 MB, Protomaps) and places (~7 MB, OpenStreetMap)." +
+            .setMessage("Downloads the newest routing data (~180 MB, brouter.de), map (~90 MB, Protomaps) and places and addresses (~40 MB, OpenStreetMap)." +
                 if (metered) "\n\n⚠ You are on mobile data." else "\n\nYou are on Wi-Fi.")
             .setPositiveButton("Download") { _, _ ->
                 runMapJob("Updating maps", restart) { p ->
                     MapData.downloadRouting(this) { f, m -> p(f * 0.55, m) }
                     MapData.downloadMap(this) { f, m -> p(0.55 + f * 0.35, m) }
-                    runCatching { MapData.downloadPois(this) { f, m -> p(0.9 + f * 0.1, m) } }.onFailure {
-                        Log.w(TAG, "places", it); p(1.0, "Places update failed (${it.message}); keeping the old places"); Thread.sleep(2500)
+                    runCatching { MapData.downloadPois(this) { f, m -> p(0.9 + f * 0.05, m) } }.onFailure {
+                        Log.w(TAG, "places", it); p(0.95, "Places update failed (${it.message}); keeping the old places"); Thread.sleep(2500)
+                    }
+                    runCatching { MapData.downloadAddresses(this) { f, m -> p(0.95 + f * 0.05, m) } }.onFailure {
+                        Log.w(TAG, "addresses", it); p(1.0, "Address update failed (${it.message}); keeping the old addresses"); Thread.sleep(2500)
                     }
                 }
             }
@@ -387,7 +390,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         numberTv = tv(30f, Pal.accent, true).apply { setPadding(dp(8), 0, 0, 0) }
         addrRow.addView(streetTv, LinearLayout.LayoutParams(-2, -2).apply { weight = 0f })
         addrRow.addView(numberTv)
-        detailTv = tv(13f, Pal.sub).apply { gravity = Gravity.CENTER }
+        detailTv = tv(14f, Pal.sub).apply { gravity = Gravity.CENTER; maxLines = 3; setLineSpacing(0f, 1.1f) }
         val varsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, 0) }
         speedTv = tv(22f, Pal.text, true).apply { text = "– km/h" }
         factorTv = tv(16f, Pal.sub).apply { setPadding(dp(14), 0, dp(14), 0) }
@@ -499,7 +502,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     private fun openScanner() {
         scanLauncher.launch(Intent(this, ScanActivity::class.java)
-            .putExtra(ScanActivity.EXTRA_EXISTING, store.pending().map { it.key() }.toTypedArray()))
+            .putExtra(ScanActivity.EXTRA_EXISTING, store.pending().map { it.key() }.toTypedArray())
+            .putExtra(ScanActivity.EXTRA_EXISTING_ORDERS, store.pending().filter { it.orderNo.isNotEmpty() }.map { it.orderShort() }.toTypedArray()))
     }
 
     private fun toggleList() { listOpen = !listOpen; refreshAll() }
@@ -772,8 +776,15 @@ class MainActivity : AppCompatActivity(), LocationListener {
         }
         fun field(hint: String, value: String, type: Int = InputType.TYPE_CLASS_TEXT) = EditText(this).apply { this.hint = hint; setText(value); inputType = type }
         val orderEt = field("Order number", s.orderNo)
-        val timeEt = field("Deliver before (HH:MM)", s.deadline?.let { hm(it) } ?: "", InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME)
-        val earliestEt = field("Exact time: not before (HH:MM) — empty = ASAP", s.earliest?.let { hm(it) } ?: "", InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME)
+        // an order is EITHER as soon as possible (deliver by a time) OR for an exact time (not earlier)
+        var exact = s.earliest != null
+        val timeEt = field("", (s.earliest ?: s.deadline)?.let { hm(it) } ?: "", InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME)
+        val kindBtn = Button(this).apply { isAllCaps = false; textSize = 15f }
+        fun showKind() {
+            kindBtn.text = if (exact) "⏰ Exact time  (tap for ASAP)" else "⚡ ASAP  (tap for exact time)"
+            timeEt.hint = if (exact) "Exact time (HH:MM), not earlier" else "Deliver by (HH:MM) — empty = no time"
+        }
+        showKind(); kindBtn.setOnClickListener { exact = !exact; showKind() }
         var pay = s.payment
         val payBtn = Button(this).apply { isAllCaps = false; textSize = 15f }
         fun showPay() { payBtn.text = "Payment: " + when (pay) { "online" -> "✅ prepaid online"; "cash" -> "💶 cash"; else -> "unknown" } + "  (tap to change)" }
@@ -782,7 +793,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val phoneEt = field("Phone", s.phone, InputType.TYPE_CLASS_PHONE)
         val nameEt = field("Name (doorbell)", s.name, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PERSON_NAME)
         val noteEt = field("Message from customer", s.note, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE).apply { maxLines = 4; textSize = 14f }
-        listOf<View>(addrBtn, orderEt, timeEt, earliestEt, payBtn, phoneEt, nameEt, noteEt).forEach { box.addView(it) }
+        listOf<View>(addrBtn, orderEt, kindBtn, timeEt, payBtn, phoneEt, nameEt, noteEt).forEach { box.addView(it) }
         if (s.phone.isNotEmpty()) box.addView(Button(this).apply {
             text = "📞 Call ${s.phone}"; isAllCaps = false
             setOnClickListener { startActivity(Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:${s.phone}"))) }
@@ -794,8 +805,9 @@ class MainActivity : AppCompatActivity(), LocationListener {
                     s.label = a.label.removeSuffix(" Groningen"); s.pos = a.pos; s.street = a.street; s.houseNo = a.houseNo; true
                 } ?: false
                 s.orderNo = orderEt.text.toString().trim()
-                s.deadline = parseHm(timeEt.text.toString())
-                s.earliest = parseHm(earliestEt.text.toString())
+                val t = timeEt.text.toString()
+                val (e, d) = TimeUtil.orderWindow(t, if (exact) t else "")
+                s.earliest = e; s.deadline = d
                 s.payment = pay
                 s.phone = phoneEt.text.toString().trim(); s.name = nameEt.text.toString().trim()
                 val noteText = noteEt.text.toString().trim()
@@ -923,7 +935,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         }
     }
 
-    private fun spokenStop(s: Stop) = (if (s.orderNo.isNotEmpty()) "order ${s.orderNo}, " else "") + "${s.streetName()} ${s.number()}"
+    private fun spokenStop(s: Stop) = (if (s.orderNo.isNotEmpty()) "order ${s.orderShort().trimStart('0').ifEmpty { "0" }}, " else "") + "${s.streetName()} ${s.number()}"
 
     private fun setRoute(r: Route) {
         navigator = Navigator(r); voice.newRoute(r); rerouting = false
@@ -978,7 +990,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         lapDeliveries++
         t.delivered = true; store.save()
         startLeg()
-        showUndo("Delivered " + (if (t.orderNo.isNotEmpty()) "#${t.orderNo} " else "") + "${t.streetName()} ${t.number()}") {
+        showUndo("Delivered " + (if (t.orderNo.isNotEmpty()) "#${t.orderShort()} " else "") + "${t.streetName()} ${t.number()}") {
             if (sampled) speed.removeLast(leg[2])
             if (saved) history.removeLastOrder()
             lapDeliveries--
@@ -996,7 +1008,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val wasTarget = mode == Mode.NAV && st == legTarget
         st.cancelled = true; store.save(); lastEtaCalc = 0
         if (wasTarget) startLeg() else refreshAll()
-        showUndo("Cancelled " + (if (st.orderNo.isNotEmpty()) "#${st.orderNo} " else "") + "${st.streetName()} ${st.number()}") { restoreStop(st) }
+        showUndo("Cancelled " + (if (st.orderNo.isNotEmpty()) "#${st.orderShort()} " else "") + "${st.streetName()} ${st.number()}") { restoreStop(st) }
     }
 
     private fun restoreStop(st: Stop) {
@@ -1332,10 +1344,10 @@ class MainActivity : AppCompatActivity(), LocationListener {
             val side = nav.destinationSide(next.pos)
             bigLeftTv.visibility = if (side == "left") View.VISIBLE else View.INVISIBLE
             bigRightTv.visibility = if (side == "right") View.VISIBLE else View.INVISIBLE
-            bigNumTv.text = next.number().ifEmpty { "?" }
-            bigSubTv.text = (next.paymentIcon().takeIf { it.isNotEmpty() && it != "✅ paid" }?.let { "$it   " } ?: "") +
+            bigNumTv.text = houseNumberSpan(next.number().ifEmpty { "?" })
+            bigSubTv.text = (next.paymentIcon().takeIf { next.payment == "cash" }?.let { "$it   " } ?: "") +
                 "${next.streetName()} · ${Navigator.fmtDist(pr.remainingM)}" +
-                (if (next.orderNo.isNotEmpty()) " · #${next.orderNo}" else "") +
+                (if (next.orderNo.isNotEmpty()) " · #${next.orderShort()}" else "") +
                 (side?.let { " · on the $it" } ?: "") +
                 (if (next.name.isNotEmpty()) "\n🔔 ${next.name}" else "") +
                 (if (next.phone.isNotEmpty()) "  📞 tap to call" else "")
@@ -1353,22 +1365,31 @@ class MainActivity : AppCompatActivity(), LocationListener {
             next == null -> { streetTv.text = "No stops yet"; numberTv.text = ""; detailTv.text = "Tap 📷 to scan receipts (or ☰ → type an address)" }
             else -> {
                 streetTv.text = next.streetName(); numberTv.text = next.number()
-                val parts = ArrayList<String>()
-                if (next.orderNo.isNotEmpty()) parts.add("#${next.orderNo}")
+                val parts = ArrayList<String>()     // line 1: where / when
+                val more = ArrayList<String>()      // line 2: what to do there
+                if (next.orderNo.isNotEmpty()) parts.add("#${next.orderShort()}")
                 if (mode == Mode.NAV && pr != null) {
                     val etaS = pr.remainingS * speed.factor(pr.remainingM)
                     val arrive = System.currentTimeMillis() + (etaS * 1000).toLong()
                     parts.add(Navigator.fmtDist(pr.remainingM)); parts.add("ETA ${hm(arrive)}")
                     next.earliest?.let { e -> if (arrive < e) parts.add("⏸ ${(e - arrive) / 60_000} min early") }
                 } else etaByStop[next.id]?.let { parts.add("ETA ${hm(it)}") }
-                timeLabel(next).takeIf { it.isNotEmpty() }?.let { parts.add(it) }
-                next.paymentIcon().takeIf { it.isNotEmpty() }?.let { parts.add(it) }
-                if (next.note.isNotEmpty()) parts.add("📝 note")
-                if (pending.size > 1) parts.add("+${pending.size - 1} more")
-                detailTv.text = parts.joinToString(" · ")
+                timeLabel(next).takeIf { it.isNotEmpty() }?.let { more.add(it) }
+                next.paymentIcon().takeIf { it.isNotEmpty() }?.let { more.add(it) }
+                if (next.note.isNotEmpty()) more.add("📝 note")
+                if (pending.size > 1) more.add("+${pending.size - 1} more")
+                detailTv.text = parts.joinToString(" · ") + if (more.isNotEmpty()) "\n" + more.joinToString(" · ") else ""
             }
         }
         updateStars()
+    }
+
+    /** "46-1" -> big "46" + smaller "-1" (room / flat), "9a" stays one size */
+    private fun houseNumberSpan(n: String): CharSequence {
+        val m = Regex("""^(\d+[A-Za-z]?)([-/ ].+)$""").find(n) ?: return n
+        return android.text.SpannableString(n).apply {
+            setSpan(android.text.style.RelativeSizeSpan(0.6f), m.groupValues[1].length, n.length, android.text.Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
     }
 
     /** "⏰ 17:30" for exact-time orders (not earlier), "⚡ by 20:25" for ASAP, "" without times. */
@@ -1435,7 +1456,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         starsTv.setTextColor(when { n >= 5 -> Color.parseColor("#d93025"); n >= 3 -> Color.parseColor("#e8900c"); else -> Color.parseColor("#e0b000") })
         // if a later order is the urgent one, say which
         if (s != (if (mode == Mode.NAV) legTarget else pending.firstOrNull()) && n > 0)
-            detailTv.text = "${detailTv.text}  ⚠ stop ${pending.indexOf(s) + 1}" + (if (s.orderNo.isNotEmpty()) " #${s.orderNo}" else "")
+            detailTv.text = "${detailTv.text}\n⚠ urgent: " + (if (s.orderNo.isNotEmpty()) "#${s.orderShort()} " else "stop ${pending.indexOf(s) + 1} ") + s.streetName()
     }
 
     private fun refreshAll() {
@@ -1456,10 +1477,10 @@ class MainActivity : AppCompatActivity(), LocationListener {
         mainBtn.background = card(Color.parseColor(when { simple && mode == Mode.NAV -> "#6b7280"; mode == Mode.NAV -> "#1e9e4a"; else -> "#1f6fe5" }), 28)
         listCard.visibility = if (listOpen && (store.pending().isNotEmpty() || store.cancelled().isNotEmpty())) View.VISIBLE else View.GONE
         recenterBtn.visibility = if (listCard.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-        orderTv.text = if (store.manualOrder) "Order: MANUAL · tap here to auto-optimise" else "Order: automatic (fastest, deadlines first) · ▲▼ to change"
+        orderTv.text = if (store.manualOrder) "Manual order · tap here for automatic" else "Automatic order · ▲▼ to change"
         adapter.notifyDataSetChanged()
         stopsRv.layoutParams = stopsRv.layoutParams.apply {
-            height = if (adapter.itemCount > 4) dp(4 * 52) else ViewGroup.LayoutParams.WRAP_CONTENT
+            height = if (adapter.itemCount > 4) dp(4 * 66) else ViewGroup.LayoutParams.WRAP_CONTENT
         }
         updateInfoCard(); drawStops()
         if (System.currentTimeMillis() - lastEtaCalc > 2000) updateEtas()
@@ -1501,7 +1522,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
             return
         }
         f.add(pt(Config.RESTAURANT, "W", "#202020"))
-        store.pending().forEachIndexed { i, s -> f.add(pt(s.pos, "${i + 1}", String.format("#%06X", 0xFFFFFF and urgencyColor(s)))) }
+        // map markers carry the order number (last 3 digits), or the position in the run without one
+        store.pending().forEachIndexed { i, s -> f.add(pt(s.pos, if (s.orderNo.isNotEmpty()) s.orderShort() else "${i + 1}", String.format("#%06X", 0xFFFFFF and urgencyColor(s)))) }
         setGeoJson("stops", """{"type":"FeatureCollection","features":[${f.joinToString(",")}]}""")
         setGeoJson("nogos", """{"type":"FeatureCollection","features":[${store.nogos.joinToString(",") { pt(it.p, "", "#d93025") }}]}""")
     }
@@ -1556,7 +1578,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                     o.put("parsed", true).put("requestedTime", r.requestedTime).put("payment", r.payment).put("postcode", r.postcode).put("houseNo", r.houseNo).put("street", r.street)
                         .put("city", r.city).put("name", r.name != null).put("phone", r.phone != null)
                         .put("orderNo", r.orderNo).put("deliveryTime", r.deliveryTime).put("asap", r.asap).put("note", r.note)
-                    val a = runCatching { PdokGeocoder.byPostcode(r.postcode!!, r.houseNo!!) }.getOrNull()
+                    val a = runCatching { PdokGeocoder.byPostcode(r.postcode!!, r.houseNo!!, r.street) }.getOrNull()
                     o.put("bag", a?.label)
                     if (add && a != null) ui.post {
                         val st = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, r.orderNo ?: "",
@@ -1670,24 +1692,30 @@ class MainActivity : AppCompatActivity(), LocationListener {
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
             val row = LinearLayout(parent.context).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(6), dp(5), dp(6), dp(5)); layoutParams = RecyclerView.LayoutParams(-1, dp(52))
+                setPadding(dp(4), dp(6), dp(4), dp(6)); layoutParams = RecyclerView.LayoutParams(-1, -2); minimumHeight = dp(60)
             }
             val badge = TextView(parent.context).apply { gravity = Gravity.CENTER; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD; textSize = 15f }
-            val col = LinearLayout(parent.context).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }
-            val title = TextView(parent.context).apply { textSize = 15f; setTextColor(Color.parseColor(Pal.text)); isSingleLine = true }
-            val sub = TextView(parent.context).apply { textSize = 13f; setTextColor(Color.parseColor(Pal.sub)); isSingleLine = true }
+            val col = LinearLayout(parent.context).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, dp(6), 0) }
+            val title = TextView(parent.context).apply {
+                textSize = 16f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor(Pal.text))
+                isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
+            }
+            val sub = TextView(parent.context).apply { textSize = 13f; setTextColor(Color.parseColor(Pal.sub)); maxLines = 2; setLineSpacing(0f, 1.05f) }
             col.addView(title); col.addView(sub)
-            row.addView(badge, LinearLayout.LayoutParams(dp(32), dp(32)))
+            row.addView(badge, LinearLayout.LayoutParams(dp(38), dp(38)))
             row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
             fun arrow(t: String) = TextView(parent.context).apply {
-                text = t; textSize = 20f; gravity = Gravity.CENTER; setTextColor(Color.parseColor(Pal.accent))
+                text = t; textSize = 16f; gravity = Gravity.CENTER; setTextColor(Color.parseColor(Pal.accent))
                 background = GradientDrawable().apply { setColor(Pal.chip2); cornerRadius = dp(8).toFloat() }
             }
+            // ▲ / ▼ stacked: leaves the width for the address
+            val updown = LinearLayout(parent.context).apply { orientation = LinearLayout.VERTICAL }
             val up = arrow("▲"); val down = arrow("▼")
-            row.addView(up, LinearLayout.LayoutParams(dp(42), dp(40)).apply { leftMargin = dp(4) })
-            row.addView(down, LinearLayout.LayoutParams(dp(42), dp(40)).apply { leftMargin = dp(4) })
-            val cancel = arrow("✕").apply { setTextColor(Color.parseColor("#d93025")) }
-            row.addView(cancel, LinearLayout.LayoutParams(dp(42), dp(40)).apply { leftMargin = dp(4) })
+            updown.addView(up, LinearLayout.LayoutParams(dp(44), dp(26)).apply { bottomMargin = dp(3) })
+            updown.addView(down, LinearLayout.LayoutParams(dp(44), dp(26)))
+            row.addView(updown, LinearLayout.LayoutParams(-2, -2))
+            val cancel = arrow("✕").apply { textSize = 18f; setTextColor(Color.parseColor("#d93025")) }
+            row.addView(cancel, LinearLayout.LayoutParams(dp(44), dp(55)).apply { leftMargin = dp(6) })
             return VH(row, badge, title, sub, up, down, cancel)
         }
 
@@ -1701,14 +1729,15 @@ class MainActivity : AppCompatActivity(), LocationListener {
             h.row.alpha = 1f; h.up.visibility = View.VISIBLE; h.down.visibility = View.VISIBLE
             h.cancel.text = "✕"; h.cancel.setTextColor(Color.parseColor("#d93025"))
             h.cancel.setOnClickListener { cancelStop(s) }
-            h.badge.text = "${position + 1}"
+            // the order number (last 3 digits) is what the kitchen and the bags show; the position otherwise
+            h.badge.text = if (s.orderNo.isNotEmpty()) s.orderShort() else "${position + 1}"
+            h.badge.textSize = if (h.badge.text.length >= 3) 12f else 15f
             h.badge.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(urgencyColor(s)) }
-            h.title.text = (if (s.orderNo.isNotEmpty()) "#${s.orderNo}  " else "") + s.label
+            h.title.text = "${s.streetName()} ${s.number()}"
             val parts = ArrayList<String>()
             etaByStop[s.id]?.let { parts.add("ETA ${hm(it)}") }
             timeLabel(s).takeIf { it.isNotEmpty() }?.let { parts.add(it) }
             s.paymentIcon().takeIf { it.isNotEmpty() }?.let { parts.add(it) }
-            starsOf(s)?.let { parts.add("★".repeat(it) + "☆".repeat(5 - it)) }
             slackMin(s)?.let { parts.add(if (it >= 0) "+$it min" else "${-it} min LATE") }
             if (parts.isEmpty()) parts.add("tap to set order no. / deadline")
             h.sub.text = parts.joinToString(" · ")
@@ -1723,11 +1752,12 @@ class MainActivity : AppCompatActivity(), LocationListener {
         private fun bindCancelled(h: VH, s: Stop) {
             h.badge.text = "✕"
             h.badge.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#9e9e9e")) }
-            h.title.text = (if (s.orderNo.isNotEmpty()) "#${s.orderNo}  " else "") + s.label
+            h.title.text = "${s.streetName()} ${s.number()}"
             h.title.paintFlags = h.title.paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG
             h.sub.text = "cancelled · tap ↺ to restore"
             h.row.alpha = 0.6f
             h.up.visibility = View.INVISIBLE; h.down.visibility = View.INVISIBLE
+            h.badge.text = "✕"; h.badge.textSize = 15f
             h.cancel.text = "↺"; h.cancel.setTextColor(Color.parseColor("#1e9e4a"))
             h.cancel.setOnClickListener { restoreStop(s) }
             h.row.setOnClickListener(null); h.row.setOnLongClickListener(null)

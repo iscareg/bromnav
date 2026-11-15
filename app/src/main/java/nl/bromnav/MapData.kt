@@ -20,6 +20,47 @@ object MapData {
     const val MAX_ZOOM = 15
 
     const val POIS_NAME = "pois.tsv.gz"
+    const val ADDR_NAME = "addresses.tsv.gz"
+    /** offline address book area (Groningen municipality incl. Haren / Ten Boer) */
+    const val ADDR_BBOX = "53.10,6.40,53.33,6.82"
+    fun addressesFile(ctx: Context) = File(ctx.getExternalFilesDir(null), ADDR_NAME)
+
+    /** Offline address book: downloaded copy if present, else the one bundled in the APK. */
+    fun openAddresses(ctx: Context): AddressBook? = runCatching {
+        val f = addressesFile(ctx)
+        if (f.exists()) f.inputStream().use { AddressBook.load(it) }
+        else (runCatching { ctx.assets.open(ADDR_NAME) }.getOrNull() ?: ctx.assets.open(ADDR_NAME.removeSuffix(".gz"))).use { AddressBook.load(it) }
+    }.onFailure { android.util.Log.w("BromNav", "addresses", it) }.getOrNull()
+
+    /** Fresh address book from OpenStreetMap (BAG import); same format as tools/build_addresses.py. */
+    fun downloadAddresses(ctx: Context, progress: (Double, String) -> Unit) {
+        progress(0.0, "Downloading addresses from OpenStreetMap…")
+        val q = "[out:json][timeout:600];nwr[\"addr:housenumber\"][\"addr:postcode\"]($ADDR_BBOX);out center tags;"
+        val c = URL("https://overpass-api.de/api/interpreter").openConnection() as HttpURLConnection
+        c.connectTimeout = 20000; c.readTimeout = 900_000; c.doOutput = true
+        c.setRequestProperty("User-Agent", "BromNav")
+        c.outputStream.use { it.write(("data=" + java.net.URLEncoder.encode(q, "UTF-8")).toByteArray()) }
+        val json = try { c.inputStream.bufferedReader().readText() } finally { c.disconnect() }
+        progress(0.7, "Indexing addresses…")
+        val els = org.json.JSONObject(json).getJSONArray("elements")
+        val groups = java.util.TreeMap<String, java.util.TreeMap<String, String>>()
+        for (i in 0 until els.length()) {
+            val e = els.getJSONObject(i); val t = e.optJSONObject("tags") ?: continue
+            val pc = t.optString("addr:postcode").replace(" ", "").uppercase(); val street = t.optString("addr:street").trim()
+            if (pc.length != 6 || street.isEmpty()) continue
+            val lat = if (e.has("lat")) e.getDouble("lat") else e.optJSONObject("center")?.getDouble("lat") ?: continue
+            val lon = if (e.has("lon")) e.getDouble("lon") else e.optJSONObject("center")?.getDouble("lon") ?: continue
+            val g = groups.getOrPut("$pc\t$street\t${t.optString("addr:city")}") { java.util.TreeMap() }
+            for (n in t.optString("addr:housenumber").replace(" ", "").split(';')) if (n.isNotEmpty())
+                g[n.uppercase()] = "${Math.round(lat * 1e5)}:${Math.round(lon * 1e5)}"
+        }
+        val tmp = File(addressesFile(ctx).path + ".new")
+        java.util.zip.GZIPOutputStream(tmp.outputStream()).bufferedWriter().use { w ->
+            for ((k, nums) in groups) { w.write(k); w.write("\t"); w.write(nums.entries.joinToString(";") { "${it.key}:${it.value}" }); w.write("\n") }
+        }
+        tmp.renameTo(addressesFile(ctx))
+        progress(1.0, "${groups.size} streets indexed")
+    }
     fun poisFile(ctx: Context) = File(ctx.getExternalFilesDir(null), POIS_NAME)
 
     /** Place search index: downloaded copy if present, else the one bundled in the APK. */

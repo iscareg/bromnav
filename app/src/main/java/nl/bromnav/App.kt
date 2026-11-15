@@ -6,5 +6,6 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         Pal.apply(Pal.choice(this))   // light / dark / follow the phone, before any screen opens
+        Thread { PdokGeocoder.book = MapData.openAddresses(this) }.start()   // offline address book
     }
 }
