@@ -40,7 +40,15 @@ android {
         }
     }
     buildTypes {
+        debug {
+            // remote control (tools/dbg.sh) and debug menu entries
+            buildConfigField("boolean", "DEBUG_TOOLS", "true")
+            // ./gradlew assembleDebug -Pbench : not debuggable, so it runs as fast as a release
+            // (for timing on the phone) but keeps the debug key and the remote control
+            if (project.hasProperty("bench")) isDebuggable = false
+        }
         release {
+            buildConfigField("boolean", "DEBUG_TOOLS", "false")
             isMinifyEnabled = false
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
@@ -73,7 +81,7 @@ dependencies {
 }
 
 // every task that reads assets (merge, lint) must run after the copies
-tasks.matching { Regex("merge\\w*Assets|generate\\w*LintVitalReportModel|lintVital\\w*|lintAnalyze\\w*").matches(it.name) }.configureEach {
+tasks.matching { Regex("merge\\w*Assets|generate\\w*Lint\\w*Model|lintVital\\w*|lintAnalyze\\w*|lint\\w*Report\\w*").matches(it.name) }.configureEach {
     dependsOn(copyPoiData)
     if (name.contains("Release")) dependsOn(copyMapData)
 }

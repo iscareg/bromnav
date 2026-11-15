@@ -13,7 +13,4 @@ object Config {
 
     /** Exact-time orders: arriving up to this many minutes after the requested time is still on time. */
     const val SCHEDULED_GRACE_MIN = 10
-
-    /** Urgency thresholds (minutes of slack). */
-    const val SLACK_GREEN_MIN = 10
 }

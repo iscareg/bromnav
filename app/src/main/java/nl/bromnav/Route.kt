@@ -108,6 +108,8 @@ class Route(
                     if (end > start) segs.add(Segment(start, end, tags))
                     start = end; search = end
                 }
+                // the last stretch always reaches the end of the track (drawing, current class)
+                if (segs.isNotEmpty() && segs.last().endIdx < pts.size - 1) segs[segs.size - 1] = segs.last().copy(endIdx = pts.size - 1)
             }
             val hints = ArrayList<Hint>()
             props.optJSONArray("voicehints")?.let { v ->

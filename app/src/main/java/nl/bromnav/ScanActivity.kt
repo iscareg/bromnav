@@ -37,7 +37,6 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.common.InputImage
 import org.json.JSONArray
-import java.util.Calendar
 import java.util.concurrent.Executors
 
 /**
@@ -137,6 +136,11 @@ class ScanActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         Pal.init(this)
         intent.getStringArrayExtra(EXTRA_EXISTING)?.let { existing.addAll(it) }
+        savedInstanceState?.getString("added")?.let { s -> JSONArray(s).let { a -> for (i in 0 until a.length()) added.add(Stop.fromJson(a.getJSONObject(i))) } }
+        // Back = Done: receipts already added must never be lost
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = done()
+        })
         NoteTranslator.ensureModel(wifiOnly = true) { ui.post { render() } }
 
         val side = dp(34)
@@ -188,6 +192,11 @@ class ScanActivity : AppCompatActivity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startCamera() else finishWith(typeInstead = true)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("added", JSONArray().apply { added.forEach { put(it.toJson()) } }.toString())
     }
 
     override fun onDestroy() { analysisExec.shutdown(); net.shutdown(); super.onDestroy() }
@@ -360,13 +369,13 @@ class ScanActivity : AppCompatActivity() {
 
         val all = a != null && time.locked != null && order.locked != null
         headTv.text = when {
-            all -> "All read ✓  — tap Add" + if (BuildConfig.DEBUG) " [${overlay.boxes.size}]" else ""
+            all -> "All read ✓  — tap Add" + if (BuildConfig.DEBUG_TOOLS) " [${overlay.boxes.size}]" else ""
             !hasData() -> "Point the camera at the receipt"
-            else -> "Keep the receipt in view…" + if (BuildConfig.DEBUG) " [${overlay.boxes.size} boxes]" else ""
+            else -> "Keep the receipt in view…" + if (BuildConfig.DEBUG_TOOLS) " [${overlay.boxes.size} boxes]" else ""
         }
         if (all && !allBuzzed) {
             allBuzzed = true
-            (getSystemService(VIBRATOR_SERVICE) as? Vibrator)?.vibrate(VibrationEffect.createOneShot(90, VibrationEffect.DEFAULT_AMPLITUDE))
+            runCatching { (getSystemService(VIBRATOR_SERVICE) as? Vibrator)?.vibrate(VibrationEffect.createOneShot(90, VibrationEffect.DEFAULT_AMPLITUDE)) }
         }
         addBtn.text = if (all) "Add ✓" else "Add with this…"
         if (added.isNotEmpty()) {
@@ -436,8 +445,7 @@ class ScanActivity : AppCompatActivity() {
     private fun commit(a: PdokGeocoder.Address, orderNo: String, hm: String,
                        notBefore: String = (req.locked ?: req.best)?.takeIf { it != "ASAP" } ?: "") {
         val n = note.locked ?: bestNote
-        val earliest = deadlineFrom(notBefore)
-        val deadline = if (earliest != null) maxOf(earliest, deadlineFrom(hm) ?: earliest) + Config.SCHEDULED_GRACE_MIN * 60_000L else deadlineFrom(hm)
+        val (earliest, deadline) = TimeUtil.orderWindow(hm, notBefore)
         val s = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, orderNo, deadline,
             street = a.street, houseNo = a.houseNo, phone = phone.locked ?: phone.best ?: "",
             note = listOfNotNull(n, noteEn?.let { "🇬🇧 $it" }).joinToString("\n"), name = name.locked ?: name.best ?: "",
@@ -451,15 +459,6 @@ class ScanActivity : AppCompatActivity() {
         bag = null; bagState = ""; noteEn = null; bestNote = null; asapSeen = 0; allBuzzed = false
         paused = false
         render()
-    }
-
-    private fun deadlineFrom(hm: String): Long? {
-        val m = Regex("""^\s*(\d{1,2})[:.]?(\d{2})\s*$""").find(hm) ?: return null
-        val c = Calendar.getInstance()
-        c.set(Calendar.HOUR_OF_DAY, m.groupValues[1].toInt().coerceIn(0, 23)); c.set(Calendar.MINUTE, m.groupValues[2].toInt().coerceIn(0, 59))
-        c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
-        if (c.timeInMillis < System.currentTimeMillis() - 6 * 3600_000L) c.add(Calendar.DAY_OF_MONTH, 1)
-        return c.timeInMillis
     }
 
     private fun done() {

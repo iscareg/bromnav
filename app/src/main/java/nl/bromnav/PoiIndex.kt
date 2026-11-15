@@ -36,31 +36,41 @@ class PoiIndex private constructor(private val items: List<Poi>) {
         if (q.isEmpty()) return emptyList()
         val qn = q.joinToString(" ")
         val hits = ArrayList<Hit>()
+        val kLon = 111_195.0 * Math.cos(Math.toRadians(near.lat))
         for (p in items) {
             var score = 0.0; var misses = 0
             for (t in q) {
-                val s = maxOf(tokenScore(t, p.nameTokens), 0.9 * tokenScore(t, p.tagWords))
+                // tag words count 0.9 at most: no need to look at them when the name already matches that well
+                val ns = tokenScore(t, p.nameTokens)
+                val s = if (ns >= 2.7) ns else maxOf(ns, 0.9 * tokenScore(t, p.tagWords))
                 if (s <= 0) { misses++; if (misses > (if (q.size >= 3) 1 else 0)) break } else score += s
             }
             // every word must match (one miss allowed for long queries)
             if (misses > (if (q.size >= 3) 1 else 0)) continue
             score -= misses * 2.0
             if (p.nameNorm == qn) score += 1.5 else if (p.nameNorm.startsWith(qn)) score += 1.0
-            val d = Geo.dist(near, p.pos)
+            // local flat-earth distance: exact enough inside the map area and much cheaper than haversine
+            val dy = (p.pos.lat - near.lat) * 111_195.0; val dx = (p.pos.lon - near.lon) * kLon
+            val d = Math.sqrt(dx * dx + dy * dy)
             score -= 1.2 * ln(1 + d / 1000)                  // nearer is better (strong: you want the one close by)
             if (p.key == "tourism" && p.value == "information") score -= 1.5   // info boards: rarely the target
+            if (p.value in FACILITY) score -= 1.0             // "Station X" parking / taxi stand: rarely the target
+            if (p.key == "railway") score += 0.8              // "station" means the railway station
             hits.add(Hit(p, score, d))
         }
         // the same place is often mapped several times (station, its bike parking, its car park...)
         val out = ArrayList<Hit>()
         for (h in hits.sortedByDescending { it.score }) {
-            if (out.none { it.poi.nameNorm == h.poi.nameNorm && Geo.dist(it.poi.pos, h.poi.pos) < 150 }) out.add(h)
+            // same name close by = the same place (or its car park / bus stop): show it once
+            if (out.none { it.poi.nameNorm == h.poi.nameNorm && Geo.dist(it.poi.pos, h.poi.pos) < (if (it.poi.value == h.poi.value) 150 else 300) }) out.add(h)
             if (out.size >= limit) break
         }
         return out
     }
 
     companion object {
+        private val FACILITY = setOf("parking", "parking_entrance", "bicycle_parking", "taxi", "atm", "vending_machine",
+            "bench", "waste_basket", "recycling", "charging_station", "parking_space", "motorcycle_parking", "toilets")
         private val catCache = HashMap<String, List<String>>()
         private val cuisineCache = HashMap<String, List<String>>()
 
@@ -73,7 +83,8 @@ class PoiIndex private constructor(private val items: List<Poi>) {
                 for (line in lines) {
                     val f = line.split('\t')
                     if (f.size < 11) continue
-                    val lat = f[9].toDoubleOrNull() ?: continue; val lon = f[10].toDoubleOrNull() ?: continue
+                    // (Kotlin's toDoubleOrNull() runs a big regex per call: far too slow for 18,000 lines on a phone)
+                    val lat = num(f[9]) ?: continue; val lon = num(f[10]) ?: continue
                     val nameNorm = norm(f[0])
                     val tags = ArrayList<String>(catCache.getOrPut(f[1] + "=" + f[2]) { categoryWords(f[1], f[2]) })
                     if (f[3].isNotEmpty()) for (c in f[3].split(';')) tags.addAll(cuisineCache.getOrPut(c) { cuisineWords(c) })
@@ -84,6 +95,8 @@ class PoiIndex private constructor(private val items: List<Poi>) {
             }
             return PoiIndex(list)
         }
+
+        private fun num(s: String): Double? = try { java.lang.Double.parseDouble(s) } catch (e: NumberFormatException) { null }
 
         /** lower case, no accents, only letters/digits separated by single spaces (fast: hot path) */
         fun norm(s: String): String {
@@ -119,23 +132,32 @@ class PoiIndex private constructor(private val items: List<Poi>) {
         /** typo match against the whole word or its prefix of similar length */
         private fun fuzzy(t: String, w: String): Boolean {
             val maxEd = if (t.length >= 7) 2 else 1
-            if (Math.abs(w.length - t.length) <= maxEd && lev(t, w, maxEd) <= maxEd) return true
-            if (w.length > t.length) return lev(t, w.substring(0, t.length), maxEd) <= maxEd
+            if (Math.abs(w.length - t.length) <= maxEd && lev(t, w, w.length, maxEd) <= maxEd) return true
+            if (w.length > t.length) return lev(t, w, t.length, maxEd) <= maxEd
             return false
         }
 
-        private fun lev(a: String, b: String, cap: Int): Int {
-            var prev = IntArray(b.length + 1) { it }
+        /** two reusable DP rows per thread (search runs for every key press: no garbage) */
+        private val rows = ThreadLocal.withInitial { arrayOf(IntArray(64), IntArray(64)) }
+
+        /** Levenshtein distance between a and the first bLen chars of b, capped at cap + 1. */
+        fun lev(a: String, b: String, bLen: Int, cap: Int): Int {
+            var r = rows.get()
+            if (r[0].size <= bLen) { r = arrayOf(IntArray(bLen + 1), IntArray(bLen + 1)); rows.set(r) }
+            var prev = r[0]; var cur = r[1]
+            for (j in 0..bLen) prev[j] = j
             for (i in 1..a.length) {
-                val cur = IntArray(b.length + 1); cur[0] = i; var rowMin = i
-                for (j in 1..b.length) {
-                    cur[j] = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + if (a[i - 1] == b[j - 1]) 0 else 1)
-                    rowMin = minOf(rowMin, cur[j])
+                cur[0] = i; var rowMin = i
+                val ca = a[i - 1]
+                for (j in 1..bLen) {
+                    val v = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + if (ca == b[j - 1]) 0 else 1)
+                    cur[j] = v
+                    if (v < rowMin) rowMin = v
                 }
                 if (rowMin > cap) return cap + 1
-                prev = cur
+                val tmp = prev; prev = cur; cur = tmp
             }
-            return prev[b.length]
+            return prev[bLen]
         }
 
         private val CATEGORY = mapOf(

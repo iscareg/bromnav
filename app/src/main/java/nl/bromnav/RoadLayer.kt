@@ -59,11 +59,15 @@ class RoadLayer(private val segDir: File, private val profile: File) {
     private var vehicleCode = -1
     var lastLoadMs = 0L; private set
 
-    fun clear() = cells.clear()
+    /** classification per distinct way description (many links share the same tags) */
+    private class Info(val tags: String, val skip: Boolean, val cls: Int, val foot: Boolean, val fw: Boolean, val bw: Boolean)
+    private val infoCache = HashMap<java.nio.ByteBuffer, Info>()
+
+    fun clear() { cells.clear(); infoCache.clear() }
 
     /** All links in the area (loads missing cells; blocking). */
     fun links(minLat: Double, minLon: Double, maxLat: Double, maxLon: Double, maxCells: Int = 12): List<Link> {
-        if (vehicleCode != Vehicle.current.code) { cells.clear(); vehicleCode = Vehicle.current.code }
+        if (vehicleCode != Vehicle.current.code) { clear(); vehicleCode = Vehicle.current.code }
         val x0 = ((minLon + 180) * 1e6).toInt() / CELL; val x1 = ((maxLon + 180) * 1e6).toInt() / CELL
         val y0 = ((minLat + 90) * 1e6).toInt() / CELL; val y1 = ((maxLat + 90) * 1e6).toInt() / CELL
         val want = ArrayList<Pair<Int, Int>>()
@@ -113,20 +117,14 @@ class RoadLayer(private val segDir: File, private val profile: File) {
                         val t = l.getTarget(n)
                         val d = l.descriptionBitmap
                         if (t != null && d != null && !l.isReverse(n)) {
-                            val kv = ctx.getKeyValueDescription(false, d)
-                            val hw = kv.split(' ').firstOrNull { it.startsWith("highway=") }?.substring(8) ?: ""
-                            if (hw !in SKIP && (hw.isNotEmpty() || kv.contains("route=ferry"))) {
-                                ctx.evaluate(false, d); val fw = ctx.costfactor
-                                ctx.evaluate(true, d); val bw = ctx.costfactor
-                                val cls = if (minOf(fw, bw) >= 9999f) FORBIDDEN else if (hw in PATHLIKE) PATH else ROAD
-                                // forbidden foot paths are obvious and very many: leave them out (cycle paths stay)
-                                val footOnly = cls == FORBIDDEN && hw in FOOT && !kv.contains("bicycle=designated")
+                            val info = infoCache.getOrPut(java.nio.ByteBuffer.wrap(d)) { classify(ctx, d) }
+                            if (!info.skip) {
                                 val g = ArrayList<LatLon>()
                                 g.add(pos(n.ilon, n.ilat))
                                 var tn = rc.geometryDecoder.decodeGeometry(l.geometry, n, t, false)
                                 while (tn != null) { g.add(pos(tn.ilon, tn.ilat)); tn = tn.next }
                                 g.add(pos(t.ilon, t.ilat))
-                                out.add(Link(RoadOverrides.id(n.ilon, n.ilat), RoadOverrides.id(t.ilon, t.ilat), g, cls, kv, footOnly, fw < 9999f, bw < 9999f))
+                                out.add(Link(RoadOverrides.id(n.ilon, n.ilat), RoadOverrides.id(t.ilon, t.ilat), g, info.cls, info.tags, info.foot, info.fw, info.bw))
                             }
                         }
                         l = l.getNext(n)
@@ -139,6 +137,18 @@ class RoadLayer(private val segDir: File, private val profile: File) {
             nc.close(); ProfileCache.releaseProfile(rc)
             lastLoadMs = System.currentTimeMillis() - t0
         }
+    }
+
+    private fun classify(ctx: btools.expressions.BExpressionContextWay, d: ByteArray): Info {
+        val kv = ctx.getKeyValueDescription(false, d)
+        val hw = kv.split(' ').firstOrNull { it.startsWith("highway=") }?.substring(8) ?: ""
+        if (hw in SKIP || (hw.isEmpty() && !kv.contains("route=ferry"))) return Info(kv, true, FORBIDDEN, false, false, false)
+        ctx.evaluate(false, d); val fw = ctx.costfactor
+        ctx.evaluate(true, d); val bw = ctx.costfactor
+        val cls = if (minOf(fw, bw) >= 9999f) FORBIDDEN else if (hw in PATHLIKE) PATH else ROAD
+        // forbidden foot paths are obvious and very many: only drawn when zoomed in close
+        val foot = cls == FORBIDDEN && hw in FOOT && !kv.contains("bicycle=designated")
+        return Info(kv, false, cls, foot, fw < 9999f, bw < 9999f)
     }
 
     private fun pos(ilon: Int, ilat: Int) = LatLon(ilat / 1e6 - 90, ilon / 1e6 - 180)

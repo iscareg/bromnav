@@ -108,6 +108,13 @@ tags the version, and publishes a GitHub release (needs the `gh` CLI). The signi
 
 ## Testing tools
 
+- `./gradlew testDebugUnitTest`: 86 unit tests. Logic: solver vs brute force, navigator, route
+  parsing, time windows, speed model, receipts, GPS filter, place search, road corrections. Real
+  data, when `data/` exists: routing legality for all three vehicles, unreachable destinations,
+  road layer, planner. The remote PMTiles test runs with `BROMNAV_NET_TEST=1`.
+- `./gradlew assembleDebug -Pbench`: a non-debuggable debug build. It runs at release speed but
+  keeps the remote control, for timing on the phone (debuggable builds are ~10x slower there).
+
 - `tools/test_routes.py`: legality regression test of the routing profile against a local BRouter
   server (any route over a forbidden segment fails).
 - `tools/brouter-patch/build.sh`: rebuilds `app/libs/brouter-1.7.10-ro.jar` (BRouter 1.7.10 +

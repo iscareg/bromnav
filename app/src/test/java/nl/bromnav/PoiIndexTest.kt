@@ -38,16 +38,47 @@ class PoiIndexTest {
     }
     @Test fun noGarbage() = assertTrue(idx.search("xyzzy", here).isEmpty())
 
+    @Test fun levenshtein() {
+        assertEquals(0, PoiIndex.lev("pizza", "pizza", 5, 2))
+        assertEquals(1, PoiIndex.lev("pizza", "piza", 4, 2))
+        assertEquals(1, PoiIndex.lev("martinitorn", "martinitoren", 11, 2))     // prefix of the same length
+        assertEquals(3, PoiIndex.lev("abcdef", "uvwxyz", 6, 2))                  // capped at cap + 1
+        assertEquals(2, PoiIndex.lev("kitten", "sitting", 7, 5).coerceAtMost(2))
+    }
+
+    private val facilities = index(
+        "Station Europapark\tamenity\tparking\t\t\t\t\t\tGroningen\t53.2056\t6.5856",
+        "Station Europapark\tamenity\tbus_station\t\t\t\t\t\tGroningen\t53.2048\t6.5873",
+        "Groningen Europapark\trailway\tstation\t\t\t\t\t\tGroningen\t53.2050\t6.5860",
+        "Albert Heijn\tshop\tsupermarket\t\t\t\t\t\tGroningen\t53.2160\t6.5650",
+        "Albert Heijn\tshop\tsupermarket\t\t\t\t\t\tGroningen\t53.2175\t6.5650",   // another store 170 m away
+    )
+
+    @Test fun railwayStationBeatsItsCarPark() {
+        val r = facilities.search("station", here)
+        assertTrue(r.indexOfFirst { it.poi.key == "railway" } < r.indexOfFirst { it.poi.value == "parking" }.let { if (it < 0) Int.MAX_VALUE else it })
+    }
+
+    @Test fun sameNamedFacilitiesShownOnce() {
+        // car park and bus station of "Station Europapark" (~150 m apart) are one place
+        assertEquals(1, facilities.search("station europapark", here).count { it.poi.name == "Station Europapark" })
+    }
+
+    @Test fun twoStoresOfAChainStay() = assertEquals(2, facilities.search("albert heijn", here).size)
+
     /** Real data (if built on this PC): timing + a few sanity queries. */
     @Test fun realData() {
         val f = File(System.getProperty("user.home"), "bromnav/data/pois.tsv.gz")
         assumeTrue(f.exists())
         val t0 = System.nanoTime(); val real = PoiIndex.load(f.inputStream()); val tLoad = (System.nanoTime() - t0) / 1e6
-        val t1 = System.nanoTime()
-        for (q in listOf("albert heijn", "martini", "pizza", "apotheek", "station", "vismarkt", "kfc", "jumbo"))
+        val qs = listOf("albert heijn", "martini", "pizza", "apotheek", "station", "vismarkt", "kfc", "jumbo", "alb hei", "martinitorn", "restaurant", "s")
+        for (q in qs.take(8))
             println("%-14s -> %s".format(q, real.search(q, here, 3).joinToString(" | ") { "${it.poi.icon} ${it.poi.name} (${(it.distM / 100).toInt() / 10.0} km)" }))
-        val tSearch = (System.nanoTime() - t1) / 1e6 / 8
-        println("${real.size} places, load ${tLoad.toInt()} ms, search ${tSearch.toInt()} ms/query (PC)")
+        repeat(3) { for (q in qs) real.search(q, here) }          // JIT warm-up
+        val t1 = System.nanoTime()
+        repeat(5) { for (q in qs) real.search(q, here) }
+        val tSearch = (System.nanoTime() - t1) / 1e6 / (5 * qs.size)
+        println("${real.size} places, load ${tLoad.toInt()} ms, search %.1f ms/query (PC, warm)".format(tSearch))
         assertTrue(real.size > 5000)
     }
 }

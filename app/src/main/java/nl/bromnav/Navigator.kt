@@ -109,7 +109,7 @@ class Navigator(val route: Route) {
         }
 
         fun fmtDist(m: Double): String = when {
-            m >= 1000 -> "%.1f km".format(m / 1000)
+            m >= 1000 -> "%.1f km".format(java.util.Locale.US, m / 1000)
             m >= 100 -> "${(m / 50).toInt() * 50} m"
             else -> "${(m / 10).toInt() * 10} m"
         }

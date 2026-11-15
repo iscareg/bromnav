@@ -45,7 +45,6 @@ import org.maplibre.android.maps.Style
 import org.maplibre.android.style.sources.GeoJsonSource
 import java.io.File
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
@@ -58,6 +57,11 @@ import java.util.concurrent.Executors
  *  - search, stop list and the menu live behind centred icons.
  */
 class MainActivity : AppCompatActivity(), LocationListener {
+
+    companion object {
+        /** the place index (~8 s to load on a slow phone) is kept for the whole process */
+        @Volatile private var poiCache: PoiIndex? = null
+    }
 
     private val TAG = "BromNav"
     private val ui = Handler(Looper.getMainLooper())
@@ -142,6 +146,10 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private var showLegal = false
     private var editRoads = false
     private var legalSeq = 0
+    /** bumps on every new leg: route results of an older leg are ignored */
+    private var legSeq = 0
+    private var lastRerouteFailMs = 0L
+    @Volatile private var etaQueued = false
     private lateinit var roadChip: TextView
 
     // ------------------------------------------------------------------ lifecycle
@@ -167,17 +175,23 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val profile = installProfiles()
         engine = BRouterEngine(segDir, profile)
         roadLayer = RoadLayer(segDir, profile)
-        Thread { val t0 = System.currentTimeMillis(); pois = MapData.openPois(this); poisLoadMs = System.currentTimeMillis() - t0 }.start()
+        pois = poiCache
+        if (pois == null) Thread {
+            val t0 = System.currentTimeMillis()
+            val idx = MapData.openPois(applicationContext)
+            poisLoadMs = System.currentTimeMillis() - t0
+            poiCache = idx; pois = idx
+        }.start()
         planner = Planner(engine!!, speed)
 
         buildUi(savedInstanceState, tiles)
         val restoredMode = savedInstanceState?.getString("appMode")
-        if (restoredMode != null) { simple = restoredMode == "simple"; refreshAll() } else showModeChooser()
-        if (BuildConfig.DEBUG) DebugBridge.register(this)
+        if (restoredMode != null) { simple = restoredMode == "simple"; restoreState(savedInstanceState); refreshAll() } else showModeChooser()
+        if (BuildConfig.DEBUG_TOOLS) DebugBridge.register(this)
         NoteTranslator.ensureModel(wifiOnly = true)
         requestLocation()
         refreshAll()
-        worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+        warmPlanner()
     }
 
     override fun onStart() { super.onStart(); mapView?.onStart() }
@@ -188,9 +202,28 @@ class MainActivity : AppCompatActivity(), LocationListener {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState); mapView?.onSaveInstanceState(outState)
         if (chooser == null) outState.putString("appMode", if (simple) "simple" else "delivery")
+        // navigation survives a recreate (theme change, the phone switching to dark mode at sunset...)
+        outState.putBoolean("nav", mode == Mode.NAV)
+        simpleTarget?.let { outState.putString("simpleTarget", it.toJson().toString()) }
+        outState.putLongArray("lap", longArrayOf(runStartMs, lapDeliveries.toLong(), legStartMs))
+        outState.putDoubleArray("leg", doubleArrayOf(legPredictedS, legDistM, legOdoM, lapOdoM))
+        outState.putBooleanArray("roads", booleanArrayOf(showLegal, editRoads))
+    }
+
+    private fun restoreState(b: Bundle) {
+        b.getString("simpleTarget")?.let { simpleTarget = Stop.fromJson(org.json.JSONObject(it)) }
+        b.getLongArray("lap")?.let { runStartMs = it[0]; lapDeliveries = it[1].toInt(); legStartMs = it[2] }
+        val leg = b.getDoubleArray("leg")
+        leg?.let { lapOdoM = it[3] }
+        b.getBooleanArray("roads")?.let { showLegal = it[0]; editRoads = it[1] }
+        if (b.getBoolean("nav") && (!simple || simpleTarget != null)) {
+            mode = Mode.NAV
+            if (leg != null) resumeLeg = doubleArrayOf(legStartMs.toDouble(), leg[0], leg[1], leg[2])
+            ui.post { if (mode == Mode.NAV) startLeg() }   // after onCreate: GPS has delivered its last known fix by then
+        }
     }
     override fun onDestroy() {
-        if (BuildConfig.DEBUG) DebugBridge.unregister(this)
+        if (BuildConfig.DEBUG_TOOLS) DebugBridge.unregister(this)
         (getSystemService(LOCATION_SERVICE) as LocationManager).removeUpdates(this)
         mapView?.onDestroy(); voice.shutdown(); worker.shutdownNow(); net.shutdownNow()
         super.onDestroy()
@@ -240,7 +273,9 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 runMapJob("Updating maps", restart) { p ->
                     MapData.downloadRouting(this) { f, m -> p(f * 0.55, m) }
                     MapData.downloadMap(this) { f, m -> p(0.55 + f * 0.35, m) }
-                    MapData.downloadPois(this) { f, m -> p(0.9 + f * 0.1, m) }
+                    runCatching { MapData.downloadPois(this) { f, m -> p(0.9 + f * 0.1, m) } }.onFailure {
+                        Log.w(TAG, "places", it); p(1.0, "Places update failed (${it.message}); keeping the old places"); Thread.sleep(2500)
+                    }
                 }
             }
             .setNegativeButton("Cancel", null).show()
@@ -415,7 +450,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
             m.uiSettings.isTiltGesturesEnabled = false
             m.uiSettings.isCompassEnabled = false
             m.setMinZoomPreference(9.0); m.setMaxZoomPreference(19.0)
-            m.setStyle(Style.Builder().fromJson(MapStyle.json(tiles, Pal.dark))) { s -> style = s; s.addImage("scooter", scooterBitmap()); showRestaurant(); refreshAll(); lastFix?.let { onLocationChanged(it, simulating) } }
+            m.setStyle(Style.Builder().fromJson(MapStyle.json(tiles, Pal.dark))) { s -> style = s; s.addImage("scooter", scooterBitmap()); showRestaurant(); refreshAll(); drawOverrides()
+                drawRoute(navigator?.route); if (showLegal) setLegal(true, editRoads); lastFix?.let { onLocationChanged(it, simulating) } }
             m.addOnMapLongClickListener { ll -> onLongPress(LatLon(ll.latitude, ll.longitude)); true }
             m.addOnMapClickListener { ll -> if (editRoads) { pickRoad(LatLon(ll.latitude, ll.longitude)); true } else false }
             m.addOnCameraIdleListener { if (showLegal) refreshLegal() }
@@ -425,6 +461,12 @@ class MainActivity : AppCompatActivity(), LocationListener {
         }
     }
 
+    /** Pre-computes travel times for the current stops (snapshot taken here, on the UI thread). */
+    private fun warmPlanner() {
+        val p = store.pending(); val ng = store.nogos.toList()
+        worker.execute { runCatching { planner?.warm(p, ng) } }
+    }
+
     private fun showRestaurant() {
         map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(Config.RESTAURANT.lat, Config.RESTAURANT.lon), 14.0))
     }
@@ -432,14 +474,15 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private val scanLauncher = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { res ->
         val data = res.data ?: return@registerForActivityResult
         val arr = org.json.JSONArray(data.getStringExtra(ScanActivity.EXTRA_STOPS) ?: "[]")
+        var n = 0
         for (i in 0 until arr.length()) {
             val st = Stop.fromJson(arr.getJSONObject(i))
-            if (store.stops.none { !it.delivered && it.key() == st.key() }) store.stops.add(st)
+            if (store.stops.none { !it.delivered && it.key() == st.key() }) { store.stops.add(st); n++ }
         }
         if (arr.length() > 0) {
             store.save(); lastEtaCalc = 0; refreshAll()
-            worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
-            toast("${arr.length()} stop${if (arr.length() > 1) "s" else ""} added from receipts")
+            warmPlanner()
+            toast("$n stop${if (n == 1) "" else "s"} added from receipts" + if (n < arr.length()) " (${arr.length() - n} already in the run)" else "")
             if (mode == Mode.NAV && !store.manualOrder) autoOrder()
         }
         if (data.getBooleanExtra(ScanActivity.EXTRA_TYPE_INSTEAD, false)) openSearch()
@@ -472,7 +515,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         chooser?.dismiss(); chooser = null
         if (mode == Mode.NAV) endNav()
         simple = s
-        if (!s) worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+        if (!s) warmPlanner()
         lastEtaCalc = 0; refreshAll()
     }
 
@@ -499,7 +542,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         pm.menu.add(0, 10, 0, "🧭 Switch to simple nav")
         pm.menu.add(0, 11, 0, "🌓 Theme: ${Pal.choice(this)} (tap to change)")
         pm.menu.add(0, 12, 0, "⬇ Update maps from internet")
-        if (BuildConfig.DEBUG && mode == Mode.NAV) pm.menu.add(0, 8, 0, if (simulating) "Stop simulation" else "Simulate ride (debug)")
+        if (BuildConfig.DEBUG_TOOLS && mode == Mode.NAV) pm.menu.add(0, 8, 0, if (simulating) "Stop simulation" else "Simulate ride (debug)")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 12 -> confirmMapDownload(restart = true)
@@ -538,7 +581,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         pm.menu.add(0, 10, 0, "🛵 Switch to delivery mode")
         pm.menu.add(0, 11, 0, "🌓 Theme: ${Pal.choice(this)} (tap to change)")
         pm.menu.add(0, 12, 0, "⬇ Update maps from internet")
-        if (BuildConfig.DEBUG && mode == Mode.NAV) pm.menu.add(0, 8, 0, if (simulating) "Stop simulation" else "Simulate ride (debug)")
+        if (BuildConfig.DEBUG_TOOLS && mode == Mode.NAV) pm.menu.add(0, 8, 0, if (simulating) "Stop simulation" else "Simulate ride (debug)")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> openSearch()
@@ -632,8 +675,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private fun roadsChanged(reason: String = "Road access changed") {
         drawOverrides()
         if (showLegal) { setLegal(true, editRoads) }
-        if (mode == Mode.NAV) reroute(reason)
-        worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+        if (mode == Mode.NAV) reroute(reason, force = true)
+        warmPlanner()
         refreshAll()
     }
 
@@ -706,7 +749,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private fun addStop(s: Stop, ask: Boolean = true) {
         store.stops.add(s); store.save()
         refreshAll()
-        worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+        warmPlanner()
         if (ask) editStop(s)
     }
 
@@ -751,7 +794,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 s.note = noteText
                 store.save(); lastEtaCalc = 0; refreshAll()
                 if (moved) {
-                    worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+                    warmPlanner()
                     if (mode == Mode.NAV && s == legTarget) startLeg()
                 }
                 // a typed Dutch message gets an English line too
@@ -775,7 +818,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 when (w) {
                     3 -> pickRoad(p)
                     0 -> navigateTo(Stop(System.currentTimeMillis(), "Pin %.5f, %.5f".format(Locale.US, p.lat, p.lon), p, street = "Pin", houseNo = "📍"))
-                    1 -> { store.nogos.add(NoGo(p, 15)); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoiding that spot") }
+                    1 -> { store.nogos.add(NoGo(p, 15)); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoiding that spot", force = true) }
                     2 -> { store.nogos.removeAll { Geo.dist(it.p, p) < 60 }; store.save(); refreshAll() }
                 }
             }.show()
@@ -786,7 +829,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             when (which) {
                 3 -> pickRoad(p)
                 0 -> addStop(Stop(System.currentTimeMillis(), "Pin %.5f, %.5f".format(Locale.US, p.lat, p.lon), p, street = "Pin", houseNo = "📍"))
-                1 -> { store.nogos.add(NoGo(p, 15)); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoiding that spot") }
+                1 -> { store.nogos.add(NoGo(p, 15)); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoiding that spot", force = true) }
                 2 -> { store.nogos.removeAll { Geo.dist(it.p, p) < 60 }; store.save(); refreshAll() }
             }
         }.show()
@@ -806,9 +849,10 @@ class MainActivity : AppCompatActivity(), LocationListener {
             startLeg(); return
         }
         mainBtn.text = "Planning…"
+        val nogos = store.nogos.toList()
         worker.execute {
             val t0 = System.currentTimeMillis()
-            val plan = try { planner!!.optimise(start, pending, store.nogos) } catch (e: Exception) {
+            val plan = try { planner!!.optimise(start, pending, nogos) } catch (e: Exception) {
                 Log.e(TAG, "optimise", e); ui.post { toast("Planning failed: ${e.message}"); refreshAll() }; return@execute
             }
             Log.i(TAG, "optimised ${pending.size} stops in ${System.currentTimeMillis() - t0} ms")
@@ -841,13 +885,17 @@ class MainActivity : AppCompatActivity(), LocationListener {
         banner.visibility = View.VISIBLE
         instrTv.text = "Calculating route…"; subTv.text = ""; arrowTv.text = "…"
         refreshAll()
+        val seq = ++legSeq
+        val nogos = store.nogos.toList()
         worker.execute {
+            if (seq != legSeq) return@execute          // a newer leg was started meanwhile
             val t0 = System.currentTimeMillis()
-            val r = try { engine!!.route(listOf(from, target), store.nogos) } catch (e: Exception) {
-                Log.e(TAG, "route", e); ui.post { instrTv.text = "No route: ${e.message}" }; return@execute
+            val r = try { engine!!.route(listOf(from, target), nogos) } catch (e: Exception) {
+                Log.e(TAG, "route", e); ui.post { if (seq == legSeq) instrTv.text = "No route: ${e.message}" }; return@execute
             }
             Log.i(TAG, "route ${r.lengthM} m / ${r.timeS} s computed in ${System.currentTimeMillis() - t0} ms")
             ui.post {
+                if (seq != legSeq || mode != Mode.NAV) return@post
                 setRoute(r)
                 val resume = resumeLeg; resumeLeg = null
                 if (resume != null) {
@@ -878,15 +926,22 @@ class MainActivity : AppCompatActivity(), LocationListener {
         }
     }
 
-    private fun reroute(reason: String) {
+    private fun reroute(reason: String, force: Boolean = false) {
         if (rerouting || mode != Mode.NAV) return
+        if (!force && System.currentTimeMillis() - lastRerouteFailMs < 10_000) return
         val from = here() ?: return
         rerouting = true
         instrTv.text = reason
         val target = legTarget?.pos ?: Config.RESTAURANT
+        val seq = legSeq
+        val nogos = store.nogos.toList()
         worker.execute {
-            val r = runCatching { engine!!.route(listOf(from, target), store.nogos) }.getOrNull()
-            ui.post { if (r != null && mode == Mode.NAV) { setRoute(r); voice.say("Route recalculated") } else rerouting = false }
+            val r = runCatching { engine!!.route(listOf(from, target), nogos) }.getOrNull()
+            ui.post {
+                rerouting = false
+                if (seq != legSeq || mode != Mode.NAV) return@post
+                if (r != null) { setRoute(r); voice.say("Route recalculated") } else lastRerouteFailMs = System.currentTimeMillis()
+            }
         }
     }
 
@@ -937,7 +992,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     private fun restoreStop(st: Stop) {
         st.cancelled = false; store.save(); lastEtaCalc = 0
-        worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+        warmPlanner()
         if (mode == Mode.NAV && store.pending().firstOrNull() != legTarget) startLeg() else refreshAll()
     }
 
@@ -954,8 +1009,9 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val pending = store.pending()
         if (pending.size < 2) { refreshAll(); return }
         val start = here() ?: Config.RESTAURANT
+        val nogos = store.nogos.toList()
         worker.execute {
-            val plan = runCatching { planner!!.optimise(start, pending, store.nogos) }.getOrNull() ?: return@execute
+            val plan = runCatching { planner!!.optimise(start, pending, nogos) }.getOrNull() ?: return@execute
             ui.post {
                 if (store.manualOrder || store.pending().toSet() != plan.order.toSet()) return@post
                 val done = store.stops.filter { it.delivered }
@@ -975,7 +1031,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     private fun endNav() {
         if (simple) simpleTarget = null
-        mode = Mode.PLAN; navigator = null; legTarget = null; lastProgress = null
+        mode = Mode.PLAN; navigator = null; legTarget = null; lastProgress = null; legSeq++
         store.stops.removeAll { it.delivered || it.cancelled }; store.save()
         banner.visibility = View.GONE
         drawRoute(null); refreshAll()
@@ -1126,7 +1182,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             if (pr.offRouteM < 20) drawMe(pr.snapped, loc.accuracy)
             showProgress(pr)
             voice.onProgress(pr, if (loc.hasSpeed()) loc.speed.toDouble() else 6.0)
-            if (nav.offRoute && loc.accuracy < 30) reroute("Off route — recalculating…")
+            if (nav.offRoute && loc.accuracy < 30 && pr.remainingM > 50) reroute("Off route — recalculating…")
             val t = legTarget
             if (t != null && pr.remainingM < 150 && !sideSaid) {
                 sideSaid = true
@@ -1316,12 +1372,16 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val start = here() ?: Config.RESTAURANT
         val target = legTarget
         val navMode = mode == Mode.NAV
+        if (etaQueued) return
+        etaQueued = true
         worker.execute {
+            try {
             val first = if (navMode && pr != null && target == pending.first()) pr.remainingS * speed.factor(pr.remainingM)
             else planner!!.leg(start, pending.first().pos, nogos).let { it.timeS * speed.factor(it.distM) }
             val etas = planner!!.etas(pending, first, nogos)
             val m = pending.mapIndexed { i, s -> s.id to etas[i] }.toMap()
             ui.post { etaByStop = m; adapter.notifyDataSetChanged(); updateInfoCard(); drawStops() }
+            } catch (e: Exception) { Log.w(TAG, "etas", e) } finally { etaQueued = false }
         }
     }
 
@@ -1383,7 +1443,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         stopsRv.layoutParams = stopsRv.layoutParams.apply {
             height = if (adapter.itemCount > 4) dp(4 * 52) else ViewGroup.LayoutParams.WRAP_CONTENT
         }
-        updateInfoCard(); drawStops(); drawOverrides()
+        updateInfoCard(); drawStops()
         if (System.currentTimeMillis() - lastEtaCalc > 2000) updateEtas()
     }
 
@@ -1401,6 +1461,12 @@ class MainActivity : AppCompatActivity(), LocationListener {
             sb.append("""{"type":"Feature","properties":{"cls":"${if (s.cls == WayClass.MOPED_PATH) "path" else "road"}"},"geometry":{"type":"LineString","coordinates":[""")
             for (i in s.startIdx..s.endIdx) { if (i > s.startIdx) sb.append(','); sb.append('[').append(r.pts[i].lon).append(',').append(r.pts[i].lat).append(']') }
             sb.append("]}}")
+        }
+        // walking part to a destination that has no legal road (route ends short of it)
+        val dest = if (simple) simpleTarget?.pos else legTarget?.pos
+        if (r.walkM > 0 && dest != null) {
+            val e = r.pts.last()
+            sb.append(""",{"type":"Feature","properties":{"cls":"next"},"geometry":{"type":"LineString","coordinates":[[${e.lon},${e.lat}],[${dest.lon},${dest.lat}]]}}""")
         }
         sb.append("]}")
         setGeoJson("route", sb.toString())
@@ -1427,16 +1493,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
     private fun hm(ms: Long) = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ms))
 
-    private fun parseHm(s: String): Long? {
-        val m = Regex("""^\s*(\d{1,2})[:.]?(\d{2})\s*$""").find(s) ?: return null
-        val h = m.groupValues[1].toInt(); val mi = m.groupValues[2].toInt()
-        if (h > 23 || mi > 59) return null
-        val c = Calendar.getInstance()
-        c.set(Calendar.HOUR_OF_DAY, h); c.set(Calendar.MINUTE, mi); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
-        // a time more than 6 h in the past means "tomorrow" (shift past midnight)
-        if (c.timeInMillis < System.currentTimeMillis() - 6 * 3600_000L) c.add(Calendar.DAY_OF_MONTH, 1)
-        return c.timeInMillis
-    }
+    private fun parseHm(s: String): Long? = TimeUtil.parseHm(s)
 
     // ------------------------------------------------------------------ debug bridge API (debug builds only)
 
@@ -1507,7 +1564,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 val s = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, order, due?.let { parseHm(it) }, street = a.street, houseNo = a.houseNo,
                     earliest = earliest?.let { parseHm(it) }, payment = pay ?: "")
                 store.stops.add(s); store.save(); lastEtaCalc = 0; refreshAll()
-                worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+                warmPlanner()
                 done("added ${s.label}")
             }
         }

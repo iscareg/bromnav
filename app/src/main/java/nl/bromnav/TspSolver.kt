@@ -4,8 +4,10 @@ package nl.bromnav
  * Orders delivery stops for a round trip that starts at node 0 (where you are now / the
  * restaurant) and ends at node [endNode] (the restaurant).
  *
- * Runs typically have 1-6 stops, so we try every order (6! = 720) and keep the exact best.
- * Above [EXACT_MAX] stops we fall back to nearest neighbour + 2-opt.
+ * Runs typically have 1-6 stops. Up to [EXACT_MAX] stops the exact best order is found by a
+ * depth-first search over all orders that abandons a partial order as soon as it already costs more
+ * than the best complete one (every cost term only grows along a route). Above that: nearest
+ * neighbour + 2-opt.
  *
  * Objective = total travel seconds
  *           + LATE_WEIGHT   * seconds late                      (summed over stops)
@@ -13,7 +15,7 @@ package nl.bromnav
  * The margin term makes the plan keep a buffer for tight orders instead of only minimising time.
  */
 object TspSolver {
-    const val EXACT_MAX = 8
+    const val EXACT_MAX = 10
     const val LATE_WEIGHT = 10.0
     const val MARGIN_WEIGHT = 2.0
     const val MARGIN_S = 300.0
@@ -33,7 +35,7 @@ object TspSolver {
     ): Result {
         if (stops.isEmpty()) return Result(emptyList(), t[0][endNode], 0.0, DoubleArray(0))
         val ev = { order: List<Int> -> evaluate(t, order, endNode, deadlines, serviceS, earliest) }
-        return if (stops.size <= EXACT_MAX) exact(stops, ev) else heuristic(t, stops, ev)
+        return if (stops.size <= EXACT_MAX) exact(t, stops, endNode, deadlines, serviceS, earliest) else heuristic(t, stops, ev)
     }
 
     /** [earliest]: "not before" per node (seconds from now) for exact-time orders; arriving earlier = waiting. */
@@ -61,25 +63,48 @@ object TspSolver {
         return Result(order, now, late, arr, margin)
     }
 
-    private fun cost(r: Result) = r.totalS + LATE_WEIGHT * r.lateS + MARGIN_WEIGHT * r.marginS
-
-    private fun exact(stops: List<Int>, ev: (List<Int>) -> Result): Result {
-        var best: Result? = null
-        permute(stops.toMutableList(), 0) { perm ->
-            val r = ev(perm)
-            if (best == null || cost(r) < cost(best!!)) best = r
+    /** Exact optimum (same objective as [evaluate]) by branch and bound; no allocation per order. */
+    private fun exact(t: Array<DoubleArray>, stops: List<Int>, endNode: Int, deadlines: Map<Int, Double?>, serviceS: Double,
+                      earliest: Map<Int, Double?>): Result {
+        val n = stops.size
+        val st = stops.toIntArray()
+        val dl = DoubleArray(n) { deadlines[st[it]] ?: Double.NaN }
+        val ea = DoubleArray(n) { earliest[st[it]] ?: Double.NaN }
+        val used = BooleanArray(n); val cur = IntArray(n); val bestOrd = IntArray(n)
+        // lower bound for what is still to come: every unvisited stop is reached over at least its
+        // cheapest incoming edge and costs one handover; the way home costs at least the cheapest return
+        val minIn = DoubleArray(n) { k -> (listOf(0) + st.filterIndexed { i, _ -> i != k }).minOf { t[it][st[k]] } }
+        val minEnd = st.minOf { t[it][endNode] }
+        var restIn = minIn.sum()
+        var best = Double.MAX_VALUE
+        fun dfs(depth: Int, prev: Int, now: Double, pen: Double) {
+            val bound = now + pen + restIn + (n - depth) * serviceS + (if (depth < n) minEnd else 0.0)
+            if (bound >= best - 1e-9) return                                 // can't beat the best order: cut
+            if (depth == n) {
+                val c = now + t[prev][endNode] + pen
+                if (c < best) { best = c; cur.copyInto(bestOrd) }
+                return
+            }
+            for (k in 0 until n) {
+                if (used[k]) continue
+                var tm = now + t[prev][st[k]]
+                val e = ea[k]; val d = dl[k]
+                if (!e.isNaN() && tm < e) tm = e                              // exact-time order: wait
+                var p = pen
+                if (!d.isNaN() && tm > d) p += LATE_WEIGHT * (tm - d)
+                if (!e.isNaN()) { if (tm > e) p += MARGIN_WEIGHT * (tm - e) }
+                else if (!d.isNaN() && tm > d - MARGIN_S) p += MARGIN_WEIGHT * minOf(tm - (d - MARGIN_S), MARGIN_S)
+                used[k] = true; cur[depth] = k; restIn -= minIn[k]
+                dfs(depth + 1, st[k], tm + serviceS, p)
+                used[k] = false; restIn += minIn[k]
+            }
         }
-        return best!!
+        dfs(0, 0, 0.0, 0.0)
+        return evaluate(t, bestOrd.map { st[it] }, endNode, deadlines, serviceS, earliest)
     }
 
-    private fun permute(a: MutableList<Int>, k: Int, visit: (List<Int>) -> Unit) {
-        if (k == a.size) { visit(ArrayList(a)); return }
-        for (i in k until a.size) {
-            a[k] = a[i].also { a[i] = a[k] }
-            permute(a, k + 1, visit)
-            a[k] = a[i].also { a[i] = a[k] }
-        }
-    }
+    /** objective value of a result (what the solver minimises) */
+    fun cost(r: Result) = r.totalS + LATE_WEIGHT * r.lateS + MARGIN_WEIGHT * r.marginS
 
     private fun heuristic(t: Array<DoubleArray>, stops: List<Int>, ev: (List<Int>) -> Result): Result {
         val left = stops.toMutableList(); val order = ArrayList<Int>(); var cur = 0
