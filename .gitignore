@@ -1,0 +1,15 @@
+# build outputs
+build/
+.gradle/
+.kotlin/
+*.apk
+local.properties
+# large downloaded data (re-create with tools/update_data.sh)
+data/segments/
+data/tiles/
+data/profiles/*.dat
+data/profiles/car-fast.brf
+data/profiles/moped.brf
+data/profiles/trekking.brf
+tools/vendor/
+*.log
