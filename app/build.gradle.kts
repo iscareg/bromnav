@@ -26,8 +26,8 @@ android {
         applicationId = "nl.bromnav"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     // Release signing key lives outside the repo (~/.bromnav-release/signing.properties).
