@@ -1,95 +1,109 @@
 # BromNav
 
-Offline delivery navigator for a **yellow-plate bromfiets (45 km/h) in Groningen**, built for a
-cheap Android phone (tested on a a low-end MediaTek phone, 4 GB RAM).
+Offline navigator for food-delivery riders on a **Dutch yellow-plate bromfiets (45 km/h)**, built
+for cheap Android phones. Routes follow Dutch moped law, delivery runs are planned automatically,
+and receipts are read with the camera.
 
-- **Legal routing**: an embedded [BRouter](https://github.com/abrensch/brouter) engine with a
-  custom profile (`app/src/main/assets/profiles/bromfiets.brf`). It never uses G11/G13 cycle
-  paths (`moped=no`), roads with a compulsory parallel bromfietspad (`moped=use_sidepath`),
-  motorroads or motorways. It does use G12a fiets/bromfietspaden (`moped=designated`).
-- **Multi-stop runs**: start and end at the restaurant (hard-coded in `Config.kt`). 1–6 stops are
-  ordered exactly (every permutation), including deadline penalties.
-- **Urgency**: a personal speed factor is learned from your finished legs, and GTA-style 0–5
-  "wanted" stars show urgency (5 = later than the app ETA allows, 0 = twice the ETA left).
-- **Bike-holder UI**: nothing essential sits in the screen corners. Within 200 m of a stop a huge
-  house number appears, with an arrow for the side of the road it's on.
-- **English voice**: turn instructions, plus *"move onto the moped path"* / *"leave the moped
-  path and join the road"*, and which side the house number is on.
-- **Manual override**: ▲/▼ in the stop list (📋) or long-press = "next"; switches the run to manual
-  order until you tap the header to auto-optimise again.
-- **Undo** for an accidental *Delivered*/*Done*, and **cancel (✕)** to disable an order without
-  deleting it (↺ restores, also with undo).
-- **Stats**: lap times, time per order, average speed, and per-order history.
-- **Receipt scanner** (📷): on-device OCR of Dutch and English receipts. A live checklist (address /
-  time / order no / payment / customer message) shows each field with a ✓ once it was read 3 times
-  identically; the address is also confirmed in BAG. Tap a ⏳ line to accept it by hand, or "Add with
-  this…" to fill in the rest yourself. Live colour-coded OCR boxes over the camera image.
-- **Customer messages** are translated Dutch → English on the phone (ML Kit, offline after a
-  one-time ~30 MB download).
-- **ASAP vs exact time**: "(gevr.: ZSM)" = ASAP, deliver by the printed time; "(req.: 17:30)" =
-  exact time, never earlier. Planning and ETAs include waiting; arriving later than the
-  requested time is penalised. Payment shown as ✅ paid / 💶 CASH / 💳 PIN.
-- **GPS**: fused + GPS at high accuracy, Kalman smoothing with outlier rejection, snapping to the
-  route; heading-up map with a scooter marker.
+**Download:** see [Releases](../../releases). The APK contains the routing data and the map of the
+Groningen area, so it works without a PC and without mobile data.
 
-## Build & install
+## Features
+
+**Two modes, chosen at start**
+- 🛵 **Delivery**: receipts, multi-stop runs, urgency, stats.
+- 🧭 **Simple nav**: search an address (with recent searches) and go. No stats are recorded.
+
+**Legal moped routing (offline)**
+- Embedded [BRouter](https://github.com/abrensch/brouter) with a custom profile
+  (`app/src/main/assets/profiles/bromfiets.brf`).
+- Never uses cycle paths closed to mopeds (`moped=no`), roads with a compulsory moped path
+  (`moped=use_sidepath`), motorroads or motorways. Uses fiets/bromfietspaden (`moped=designated`).
+- Long-press the map → "Avoid here" if the map data is wrong somewhere.
+
+**Delivery runs**
+- Stops are ordered automatically (exact for up to 8 stops), starting and ending at the restaurant
+  (`Config.kt`).
+- **ASAP orders** keep a safety margin before their promised time. **Exact-time orders**
+  ("req.: 17:30") are never delivered early; arriving after the requested time is penalised, with
+  a hard limit of +10 min.
+- Manual override (▲/▼, long-press = next), undo for *Delivered*, cancel/restore orders, and full
+  editing of an order.
+- GTA-style 0–5 urgency stars and a personal speed multiplier learned from your own deliveries.
+
+**Receipt scanner** (📷)
+- On-device OCR of Dutch and English receipts.
+- A live checklist shows address, time, order number, payment and customer message. Each field
+  gets a ✓ after 3 identical reads; the address is also checked against the Dutch address register
+  (BAG, via PDOK).
+- Tap a pending line to accept it yourself, or use "Add with this…" and fill in the rest.
+- Live colour-coded OCR boxes on the camera image.
+- Customer messages are translated Dutch → English on the phone (ML Kit, offline after a
+  one-time download).
+- Payment is shown as ✅ prepaid online or 💶 cash.
+
+**Riding**
+- Heading-up map with a scooter marker, smoothed GPS (Kalman filter + outlier rejection), and
+  snapping to the route.
+- English voice guidance, including *"move onto the moped path"* / *"leave the moped path and join
+  the road"* and which side the house number is on.
+- Within 200 m of a stop: a huge house number with a left/right arrow, the doorbell name, the
+  customer message and tap-to-call.
+- Nothing essential sits in the screen corners (phone holders cover them).
+- Light / dark / automatic theme.
+- **Update maps from internet** (☰): fresh routing data from brouter.de, and a fresh map cut out
+  of the public [Protomaps](https://protomaps.com) world build directly on the phone.
+
+## Building
+
+Requirements: JDK 17, Android SDK (platform 35), and a phone with USB debugging for testing.
 
 ```bash
-source env.sh                       # JDK 17 + Android SDK paths
+cp env.sh.example env.sh   # set JAVA_HOME / ANDROID_HOME
+source env.sh
 ./gradlew testDebugUnitTest assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## Offline data (not in git, ~270 MB)
+Debug builds don't contain the maps. On first start they offer to download them, or you can copy
+them with `tools/push_data.sh`.
 
-```bash
-tools/update_data.sh   # download BRouter segment E5_N50.rd5 + Groningen Protomaps extract
-tools/push_data.sh     # copy both to the phone (start the app once first)
-```
+### Offline data
 
-`tools/update_data.sh` needs the BRouter release and the `pmtiles` CLI in `tools/vendor/`
-(see the script for URLs).
+`tools/update_data.sh` downloads the BRouter segment (`data/segments/E5_N50.rd5`) and cuts the
+area out of the Protomaps build (`data/tiles/groningen.pmtiles`, needs the
+[`pmtiles`](https://github.com/protomaps/go-pmtiles) CLI in `tools/vendor/`). The area and the
+segments are configured in `MapData.kt` and the script.
 
-## Testing the routing profile on the PC
+### Releases
 
-```bash
-# local BRouter server on :17777 (data/profiles holds lookups.dat + the bromfiets profile symlink)
-cd data && java -cp ../tools/vendor/brouter/brouter-1.7.10/brouter-1.7.10-all.jar \
-    btools.server.RouteServer segments profiles profiles 17777 4 &
-tools/test_routes.py 1 40      # random + listed trips; fails on any illegal segment
-tools/route.sh "6.5734,53.2182|6.5850,53.2250"   # one route with its way tags
-```
+`tools/release.sh [--fresh]` runs the tests, builds a signed release APK with the maps inside,
+tags the version, and publishes a GitHub release (needs the `gh` CLI). The signing key is read from
+`~/.bromnav-release/signing.properties` and is never committed. Bump `versionCode` and
+`versionName` in `app/build.gradle.kts` first.
 
-Add trips where other navigators route you illegally to `CASES` in `tools/test_routes.py`.
+## Testing tools
 
-## Debug remote control (debug builds)
+- `tools/test_routes.py`: legality regression test of the routing profile against a local BRouter
+  server (any route over a forbidden segment fails).
+- `tools/dbg.sh`: remote control of a debug build over adb (add stops, plan, simulate a ride, OCR an
+  image, translate, read the full state as JSON). See the header of the script.
+- `tools/ocr_view.py`: OCR photos with the phone and show the recognised boxes on the PC.
 
-The app can be driven from the PC with no tapping; replies come back as JSON state:
-
-```bash
-tools/dbg.sh add "Vismarkt 10" 1201 18:45   # geocode + add stop with order no + deadline
-tools/dbg.sh go          # optimise + start navigation
-tools/dbg.sh sim         # fake GPS rides along the route (~25 km/h)
-tools/dbg.sh state       # mode, stops, ETAs, stars, route, banner/card text, spoken phrases
-tools/dbg.sh delivered | undo | cancel 2 | restore 1 | move 3 1 | auto | end | clear | resetstats
-tools/dbg.sh ocr receipts_test/x.jpg [add]     # OCR an image stored in the app's files dir
-tools/dbg.sh translate "Graag achterom"        # test the NL->EN translator
-tools/ocr_view.py photo.jpg ...                # OCR photos via the phone and show the boxes on the PC
-```
-
-## Layout
+## Code map
 
 | Path | What |
 |---|---|
-| `app/src/main/java/nl/bromnav/MainActivity.kt` | UI, navigation flow, GPS |
-| `BRouterEngine.kt`, `Route.kt` | embedded routing + parsing of segments, way tags and voice hints |
+| `MainActivity.kt` | UI, modes, navigation flow, GPS |
+| `BRouterEngine.kt`, `Route.kt` | embedded routing; route segments, way tags, voice hints |
 | `Navigator.kt`, `VoiceGuide.kt` | route following, off-route detection, spoken guidance |
-| `Planner.kt`, `TspSolver.kt` | travel-time matrix + stop ordering |
-| `SpeedModel.kt`, `History.kt`, `StatsActivity.kt` | personal speed factor, urgency stars, stats |
-| `PdokGeocoder.kt`, `AddressSearch.kt` | Dutch address search + exact postcode lookup (PDOK / BAG) |
-| `ScanActivity.kt`, `ReceiptParser.kt`, `ReceiptOcr.kt` | live receipt reader, parser, OCR helper |
-| `NoteTranslator.kt` | on-device NL→EN translation of customer messages |
-| `GpsFilter.kt` | Kalman smoothing + outlier rejection of location fixes |
-| `MapStyle.kt` | offline MapLibre style for the Protomaps tiles |
-| `DebugBridge.kt` | debug-only broadcast interface used by `tools/dbg.sh` |
-| `tools/` | data download/push, route tests, debug remote, adb UI driver |
+| `Planner.kt`, `TspSolver.kt` | travel-time matrix and stop ordering with time windows |
+| `ScanActivity.kt`, `ReceiptParser.kt`, `ReceiptOcr.kt` | live receipt reader |
+| `NoteTranslator.kt` | NL→EN translation of customer messages |
+| `GpsFilter.kt` | location smoothing |
+| `MapData.kt`, `PmtilesExtract.kt` | bundled/downloaded offline data; PMTiles cut-out over HTTP |
+| `MapStyle.kt`, `Pal.kt` | light/dark map style and UI palette |
+| `PdokGeocoder.kt`, `AddressSearch.kt`, `SearchHistory.kt` | Dutch address search |
+| `SpeedModel.kt`, `History.kt`, `StatsActivity.kt` | speed multiplier, stats |
+| `DebugBridge.kt` | debug-only remote control used by `tools/dbg.sh` |
+
+Map data © OpenStreetMap contributors. Routing: BRouter. Map tiles: Protomaps.

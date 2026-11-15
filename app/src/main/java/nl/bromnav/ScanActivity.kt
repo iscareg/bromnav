@@ -131,10 +131,11 @@ class ScanActivity : AppCompatActivity() {
         background = card(Color.parseColor(color), 26); setOnClickListener { onClick() }
         layoutParams = LinearLayout.LayoutParams(0, dp(52), 1f).apply { setMargins(dp(5), 0, dp(5), 0) }
     }
-    private fun row(size: Float = 16f) = TextView(this).apply { textSize = size; setTextColor(Color.parseColor("#222222")); setPadding(0, dp(3), 0, dp(3)) }
+    private fun row(size: Float = 16f) = TextView(this).apply { textSize = size; setTextColor(Color.parseColor(Pal.text)); setPadding(0, dp(3), 0, dp(3)) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Pal.init(this)
         intent.getStringArrayExtra(EXTRA_EXISTING)?.let { existing.addAll(it) }
         NoteTranslator.ensureModel(wifiOnly = true) { ui.post { render() } }
 
@@ -148,8 +149,8 @@ class ScanActivity : AppCompatActivity() {
 
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
         // live checklist
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = card(Color.parseColor("#F2FFFFFF")); setPadding(dp(14), dp(10), dp(14), dp(10)) }
-        headTv = row(15f).apply { typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#14335e")); gravity = Gravity.CENTER }
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = card(Color.parseColor(if (Pal.dark) "#F21E2228" else "#F2FFFFFF")); setPadding(dp(14), dp(10), dp(14), dp(10)) }
+        headTv = row(15f).apply { typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor(Pal.accent)); gravity = Gravity.CENTER }
         addrTv = row(); timeTv = row(); orderTv = row(); noteTv = row(14f)
         listOf(headTv, addrTv, timeTv, orderTv, noteTv).forEach { list.addView(it) }
         // "I can see it's right": tap a ⏳ line to accept what it currently shows
@@ -324,7 +325,7 @@ class ScanActivity : AppCompatActivity() {
         val grey = "#8a8a8a"
         fun line(tv: TextView, ok: Boolean, label: String, value: String?, tentative: String?) {
             tv.text = if (ok) "✓  $label:  $value" else "⏳  $label:  " + (tentative?.let { "$it  · tap ✓" } ?: "reading…")
-            tv.setTextColor(Color.parseColor(if (ok) "#1b5e20" else grey))
+            tv.setTextColor(Color.parseColor(if (ok) Pal.good else grey))
             tv.typeface = if (ok) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         }
         val a = bag
@@ -355,7 +356,7 @@ class ScanActivity : AppCompatActivity() {
             !NoteTranslator.ready -> "📝  $n\n🇬🇧  (translation after a one-time 30 MB download on Wi-Fi)"
             else -> "📝  $n\n🇬🇧  translating…"
         }
-        noteTv.setTextColor(Color.parseColor(if (n != null) "#4a148c" else grey))
+        noteTv.setTextColor(Color.parseColor(if (n != null) Pal.note else grey))
 
         val all = a != null && time.locked != null && order.locked != null
         headTv.text = when {

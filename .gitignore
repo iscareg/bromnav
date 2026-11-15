@@ -13,3 +13,4 @@ data/profiles/moped.brf
 data/profiles/trekking.brf
 tools/vendor/
 *.log
+env.sh

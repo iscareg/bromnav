@@ -141,6 +141,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        Pal.init(this)
         MapLibre.getInstance(this)
         store = RunStore(this)
         speed = SpeedModel(this)
@@ -149,17 +150,16 @@ class MainActivity : AppCompatActivity(), LocationListener {
         voice = VoiceGuide(this)
 
         val files = getExternalFilesDir(null)!!
-        val segDir = File(files, "segments")
-        val tiles = File(files, "tiles/groningen.pmtiles")
-        segDir.mkdirs(); tiles.parentFile?.mkdirs()
-        val haveData = segDir.listFiles { f -> f.name.endsWith(".rd5") }?.isNotEmpty() == true && tiles.exists()
-        if (!haveData) { showMissingData(files); return }
+        val segDir = MapData.segDir(this)
+        val tiles = MapData.tilesFile(this)
+        if (!MapData.haveData(this)) { showSetup(files); return }
 
         engine = BRouterEngine(segDir, installProfiles())
         planner = Planner(engine!!, speed)
 
         buildUi(savedInstanceState, tiles)
-        if (savedInstanceState == null) showModeChooser()
+        val restoredMode = savedInstanceState?.getString("appMode")
+        if (restoredMode != null) { simple = restoredMode == "simple"; refreshAll() } else showModeChooser()
         if (BuildConfig.DEBUG) DebugBridge.register(this)
         NoteTranslator.ensureModel(wifiOnly = true)
         requestLocation()
@@ -172,7 +172,10 @@ class MainActivity : AppCompatActivity(), LocationListener {
     override fun onPause() { mapView?.onPause(); super.onPause() }
     override fun onStop() { mapView?.onStop(); super.onStop() }
     override fun onLowMemory() { super.onLowMemory(); mapView?.onLowMemory() }
-    override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); mapView?.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState); mapView?.onSaveInstanceState(outState)
+        if (chooser == null) outState.putString("appMode", if (simple) "simple" else "delivery")
+    }
     override fun onDestroy() {
         if (BuildConfig.DEBUG) DebugBridge.unregister(this)
         (getSystemService(LOCATION_SERVICE) as LocationManager).removeUpdates(this)
@@ -188,25 +191,84 @@ class MainActivity : AppCompatActivity(), LocationListener {
         return File(dir, "bromfiets.brf")
     }
 
-    private fun showMissingData(files: File) {
-        setContentView(TextView(this).apply {
-            setPadding(dp(32), dp(48), dp(32), dp(24)); textSize = 16f
-            text = "BromNav needs its offline data.\n\nFrom the PC run:\n\n  ~/bromnav/tools/push_data.sh\n\n" +
-                "It copies the routing data (segments/*.rd5) and the map (tiles/groningen.pmtiles) to\n\n${files.absolutePath}\n\nthen restart the app."
+    /** First start without offline data: install the bundled maps, or offer to download them. */
+    private fun showSetup(files: File) {
+        if (MapData.hasBundled(this)) {
+            runMapJob("Setting up offline maps", restart = true) { p -> MapData.installBundled(this, p) }
+            return
+        }
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(dp(32), dp(48), dp(32), dp(24))
+            setBackgroundColor(Pal.page)
+        }
+        col.addView(tv(22f, Pal.text, true).apply { text = "Offline maps needed"; gravity = Gravity.CENTER })
+        col.addView(tv(15f, Pal.sub).apply {
+            text = "BromNav routes and shows the map without internet. Download the routing data and the map once " +
+                "(about 270 MB, Wi-Fi recommended)."; gravity = Gravity.CENTER; setPadding(0, dp(12), 0, dp(20))
         })
+        col.addView(Button(this).apply {
+            text = "⬇  Download offline maps"; isAllCaps = false; textSize = 18f; setTextColor(Color.WHITE)
+            background = card(Color.parseColor("#1f6fe5"), 26)
+            setOnClickListener { confirmMapDownload(restart = true) }
+        }, LinearLayout.LayoutParams(-1, dp(56)))
+        col.addView(tv(12f, Pal.sub).apply {
+            text = "\nAlternatively copy segments/*.rd5 and tiles/${MapData.TILES_NAME} to\n${files.absolutePath}"; gravity = Gravity.CENTER
+        })
+        setContentView(col)
+    }
+
+    private fun confirmMapDownload(restart: Boolean) {
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val metered = cm.isActiveNetworkMetered
+        AlertDialog.Builder(this).setTitle("Update maps from internet")
+            .setMessage("Downloads the newest routing data (~180 MB, brouter.de) and map (~90 MB, Protomaps / OpenStreetMap)." +
+                if (metered) "\n\n⚠ You are on mobile data." else "\n\nYou are on Wi-Fi.")
+            .setPositiveButton("Download") { _, _ ->
+                runMapJob("Updating maps", restart) { p ->
+                    MapData.downloadRouting(this) { f, m -> p(f * 0.6, m) }
+                    MapData.downloadMap(this) { f, m -> p(0.6 + f * 0.4, m) }
+                }
+            }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    /** Runs a long data job with a progress dialog; on success restarts the app on the new data. */
+    private fun runMapJob(title: String, restart: Boolean, job: ((Double, String) -> Unit) -> Unit) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(12), dp(24), dp(8)) }
+        val bar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
+        val msg = tv(14f, Pal.text).apply { text = "Starting…" }
+        box.addView(bar); box.addView(msg)
+        val dlg = AlertDialog.Builder(this).setTitle(title).setView(box).setCancelable(false).show()
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        Thread {
+            val err = runCatching { job { f, m -> ui.post { bar.progress = (f * 1000).toInt(); msg.text = m } } }.exceptionOrNull()
+            ui.post {
+                dlg.dismiss()
+                if (err != null) {
+                    AlertDialog.Builder(this).setTitle("Map update failed").setMessage(err.message ?: err.toString())
+                        .setPositiveButton("OK", null).show()
+                } else if (restart) restartApp()
+            }
+        }.start()
+    }
+
+    /** Fresh process, so the routing engine and the map open the new files. */
+    private fun restartApp() {
+        startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        Runtime.getRuntime().exit(0)
     }
 
     // ------------------------------------------------------------------ UI construction
 
     private fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
-    private fun card(color: Int = Color.WHITE, radius: Int = 16) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
-    private fun tv(size: Float, color: String = "#1b1b1b", bold: Boolean = false) = TextView(this).apply {
+    private fun card(color: Int = Pal.card, radius: Int = 16) = GradientDrawable().apply { setColor(color); cornerRadius = dp(radius).toFloat() }
+    private fun tv(size: Float, color: String = Pal.text, bold: Boolean = false) = TextView(this).apply {
         textSize = size; setTextColor(Color.parseColor(color)); if (bold) typeface = Typeface.DEFAULT_BOLD
     }
 
     private fun iconBtn(label: String, onClick: (View) -> Unit) = Button(this).apply {
-        text = label; textSize = 22f; setPadding(0, 0, 0, 0)
-        background = card(Color.WHITE, 28); elevation = dp(4).toFloat()
+        text = label; textSize = 22f; setPadding(0, 0, 0, 0); setTextColor(Color.parseColor(Pal.text))
+        background = card(Pal.chip, 28); elevation = dp(4).toFloat()
         layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { setMargins(dp(4), 0, dp(4), 0) }
         setOnClickListener { onClick(it) }
     }
@@ -232,7 +294,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
         // --- recenter: middle of the right edge
         recenterBtn = Button(this).apply {
-            text = "◎"; textSize = 22f; background = card(Color.WHITE, 28); elevation = dp(4).toFloat()
+            text = "◎"; textSize = 22f; background = card(Pal.chip, 28); elevation = dp(4).toFloat(); setTextColor(Color.parseColor(Pal.text))
             setOnClickListener { follow = true; lastFix?.let { moveCamera(it, mode == Mode.NAV) } ?: showRestaurant() }
         }
         root.addView(recenterBtn, FrameLayout.LayoutParams(dp(54), dp(54), Gravity.END or Gravity.CENTER_VERTICAL).apply { rightMargin = dp(8) })
@@ -244,7 +306,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             orientation = LinearLayout.VERTICAL; background = card(); elevation = dp(6).toFloat()
             setPadding(dp(8), dp(6), dp(8), dp(6)); visibility = View.GONE
         }
-        orderTv = tv(13f, "#14335e", true).apply {
+        orderTv = tv(13f, Pal.accent, true).apply {
             gravity = Gravity.CENTER; setPadding(dp(6), dp(4), dp(6), dp(6))
             setOnClickListener { if (store.manualOrder) autoOrder() }
         }
@@ -267,14 +329,14 @@ class MainActivity : AppCompatActivity(), LocationListener {
         normalBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
         val addrRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         streetTv = tv(20f).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END }
-        numberTv = tv(30f, "#14335e", true).apply { setPadding(dp(8), 0, 0, 0) }
+        numberTv = tv(30f, Pal.accent, true).apply { setPadding(dp(8), 0, 0, 0) }
         addrRow.addView(streetTv, LinearLayout.LayoutParams(-2, -2).apply { weight = 0f })
         addrRow.addView(numberTv)
-        detailTv = tv(13f, "#666666").apply { gravity = Gravity.CENTER }
+        detailTv = tv(13f, Pal.sub).apply { gravity = Gravity.CENTER }
         val varsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, 0) }
-        speedTv = tv(22f, "#1b1b1b", true).apply { text = "– km/h" }
-        factorTv = tv(16f, "#555555").apply { setPadding(dp(14), 0, dp(14), 0) }
-        starsTv = tv(24f, "#888888").apply { text = "☆☆☆☆☆" }
+        speedTv = tv(22f, Pal.text, true).apply { text = "– km/h" }
+        factorTv = tv(16f, Pal.sub).apply { setPadding(dp(14), 0, dp(14), 0) }
+        starsTv = tv(24f, Pal.faint).apply { text = "☆☆☆☆☆" }
         varsRow.addView(speedTv); varsRow.addView(factorTv); varsRow.addView(starsTv)
         normalBox.addView(addrRow, LinearLayout.LayoutParams(-1, -2))
         normalBox.addView(detailTv, LinearLayout.LayoutParams(-1, -2))
@@ -284,11 +346,11 @@ class MainActivity : AppCompatActivity(), LocationListener {
         bigBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; visibility = View.GONE }
         val bigRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         bigLeftTv = tv(64f, "#e8900c", true).apply { text = "◀" }
-        bigNumTv = tv(84f, "#14335e", true).apply { setPadding(dp(12), 0, dp(12), 0); includeFontPadding = false }
+        bigNumTv = tv(84f, Pal.accent, true).apply { setPadding(dp(12), 0, dp(12), 0); includeFontPadding = false }
         bigRightTv = tv(64f, "#e8900c", true).apply { text = "▶" }
         bigRow.addView(bigLeftTv); bigRow.addView(bigNumTv); bigRow.addView(bigRightTv)
-        bigSubTv = tv(16f, "#444444").apply { gravity = Gravity.CENTER }
-        bigNoteTv = tv(11f, "#5b2a86").apply { gravity = Gravity.CENTER; maxLines = 4; setPadding(0, dp(3), 0, 0) }
+        bigSubTv = tv(16f, Pal.sub).apply { gravity = Gravity.CENTER }
+        bigNoteTv = tv(11f, Pal.note).apply { gravity = Gravity.CENTER; maxLines = 4; setPadding(0, dp(3), 0, 0) }
         bigBox.addView(bigRow); bigBox.addView(bigSubTv, LinearLayout.LayoutParams(-1, -2)); bigBox.addView(bigNoteTv, LinearLayout.LayoutParams(-1, -2))
         infoCard.addView(bigBox, LinearLayout.LayoutParams(-1, -2))
         undoBar = LinearLayout(this).apply {
@@ -334,7 +396,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             m.uiSettings.isTiltGesturesEnabled = false
             m.uiSettings.isCompassEnabled = false
             m.setMinZoomPreference(9.0); m.setMaxZoomPreference(19.0)
-            m.setStyle(Style.Builder().fromJson(MapStyle.json(tiles))) { s -> style = s; s.addImage("scooter", scooterBitmap()); showRestaurant(); refreshAll(); lastFix?.let { onLocationChanged(it, simulating) } }
+            m.setStyle(Style.Builder().fromJson(MapStyle.json(tiles, Pal.dark))) { s -> style = s; s.addImage("scooter", scooterBitmap()); showRestaurant(); refreshAll(); lastFix?.let { onLocationChanged(it, simulating) } }
             m.addOnMapLongClickListener { ll -> onLongPress(LatLon(ll.latitude, ll.longitude)); true }
             m.addOnCameraMoveStartedListener { reason ->
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) follow = false
@@ -413,9 +475,12 @@ class MainActivity : AppCompatActivity(), LocationListener {
         } else pm.menu.add(0, 6, 0, "Clear all stops")
         pm.menu.add(0, 7, 0, "Remove all avoid marks")
         pm.menu.add(0, 10, 0, "🧭 Switch to simple nav")
+        pm.menu.add(0, 11, 0, "🌓 Theme: ${Pal.choice(this)} (tap to change)")
+        pm.menu.add(0, 12, 0, "⬇ Update maps from internet")
         if (BuildConfig.DEBUG && mode == Mode.NAV) pm.menu.add(0, 8, 0, if (simulating) "Stop simulation" else "Simulate ride (debug)")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
+                12 -> confirmMapDownload(restart = true)
                 1 -> openSearch()
                 9 -> openScanner()
                 2 -> startActivity(Intent(this, StatsActivity::class.java))
@@ -426,10 +491,18 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 7 -> { store.nogos.clear(); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoid marks removed") }
                 8 -> if (simulating) stopSimulation() else simulate()
                 10 -> setAppMode(true)
+                11 -> cycleTheme()
             }
             true
         }
         pm.show()
+    }
+
+    /** auto -> dark -> light -> auto; AppCompat recreates the activity with the new palette. */
+    private fun cycleTheme() {
+        val next = when (Pal.choice(this)) { "auto" -> "dark"; "dark" -> "light"; else -> "auto" }
+        Pal.setChoice(this, next)
+        toast("Theme: $next")
     }
 
     private fun openSimpleMenu(anchor: View) {
@@ -439,6 +512,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
         if (mode == Mode.NAV) pm.menu.add(0, 5, 0, "End navigation")
         pm.menu.add(0, 7, 0, "Remove all avoid marks")
         pm.menu.add(0, 10, 0, "🛵 Switch to delivery mode")
+        pm.menu.add(0, 11, 0, "🌓 Theme: ${Pal.choice(this)} (tap to change)")
+        pm.menu.add(0, 12, 0, "⬇ Update maps from internet")
         if (BuildConfig.DEBUG && mode == Mode.NAV) pm.menu.add(0, 8, 0, if (simulating) "Stop simulation" else "Simulate ride (debug)")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
@@ -448,6 +523,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 7 -> { store.nogos.clear(); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoid marks removed") }
                 8 -> if (simulating) stopSimulation() else simulate()
                 10 -> setAppMode(false)
+                11 -> cycleTheme()
+                12 -> confirmMapDownload(restart = true)
             }
             true
         }
@@ -935,10 +1012,23 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val b = CameraPosition.Builder().target(LatLng(loc.latitude, loc.longitude))
         heading?.let { b.bearing(it.toDouble()) }          // heading up while following
         if (navStyle) {
-            b.zoom(17.0).tilt(40.0)
+            b.zoom(speedZoom(loc)).tilt(40.0)
             b.padding(0.0, mapView!!.height * 0.30, 0.0, 0.0)
         } else b.zoom(maxOf(m.cameraPosition.zoom, 15.0))
         m.animateCamera(CameraUpdateFactory.newCameraPosition(b.build()), 800)
+    }
+
+    /**
+     * Zoom from speed: z17.5 when slow (see the street), z16 at 45 km/h (see further ahead).
+     * Smoothed so the map doesn't pump; slightly closer just before a turn.
+     */
+    private var zoomSmooth = 17.0
+    private fun speedZoom(loc: Location): Double {
+        val kmh = if (loc.hasSpeed()) loc.speed * 3.6 else 0.0
+        var target = 17.5 - (kmh.coerceIn(10.0, 45.0) - 10.0) / 35.0 * 1.5
+        lastProgress?.let { if (it.nextHint != null && it.distToHintM < 120) target += 0.4 }
+        zoomSmooth += (target - zoomSmooth) * 0.25
+        return zoomSmooth
     }
 
     /** Top-down scooter marker (pointing up = direction of travel), drawn in code. */
@@ -1098,7 +1188,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         if (simple) return
         val pending = store.pending()
         val best = pending.mapNotNull { s -> starsOf(s)?.let { s to it } }.maxByOrNull { it.second }
-        if (best == null) { starsTv.text = "☆☆☆☆☆"; starsTv.setTextColor(Color.parseColor("#bbbbbb")); return }
+        if (best == null) { starsTv.text = "☆☆☆☆☆"; starsTv.setTextColor(Color.parseColor(Pal.faint)); return }
         val (s, n) = best
         starsTv.text = "★".repeat(n) + "☆".repeat(5 - n)
         starsTv.setTextColor(when { n >= 5 -> Color.parseColor("#d93025"); n >= 3 -> Color.parseColor("#e8900c"); else -> Color.parseColor("#e0b000") })
@@ -1313,14 +1403,14 @@ class MainActivity : AppCompatActivity(), LocationListener {
             }
             val badge = TextView(parent.context).apply { gravity = Gravity.CENTER; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD; textSize = 15f }
             val col = LinearLayout(parent.context).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }
-            val title = TextView(parent.context).apply { textSize = 15f; setTextColor(Color.parseColor("#1b1b1b")); isSingleLine = true }
-            val sub = TextView(parent.context).apply { textSize = 13f; setTextColor(Color.parseColor("#666666")); isSingleLine = true }
+            val title = TextView(parent.context).apply { textSize = 15f; setTextColor(Color.parseColor(Pal.text)); isSingleLine = true }
+            val sub = TextView(parent.context).apply { textSize = 13f; setTextColor(Color.parseColor(Pal.sub)); isSingleLine = true }
             col.addView(title); col.addView(sub)
             row.addView(badge, LinearLayout.LayoutParams(dp(32), dp(32)))
             row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
             fun arrow(t: String) = TextView(parent.context).apply {
-                text = t; textSize = 20f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#14335e"))
-                background = GradientDrawable().apply { setColor(Color.parseColor("#e9ecf1")); cornerRadius = dp(8).toFloat() }
+                text = t; textSize = 20f; gravity = Gravity.CENTER; setTextColor(Color.parseColor(Pal.accent))
+                background = GradientDrawable().apply { setColor(Pal.chip2); cornerRadius = dp(8).toFloat() }
             }
             val up = arrow("▲"); val down = arrow("▼")
             row.addView(up, LinearLayout.LayoutParams(dp(42), dp(40)).apply { leftMargin = dp(4) })

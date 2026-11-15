@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -12,21 +13,32 @@ android {
         applicationId = "nl.bromnav"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = 3
+        versionName = "0.3.0"
         ndk { abiFilters += listOf("arm64-v8a") }
+    }
+    // Release signing key lives outside the repo (~/.bromnav-release/signing.properties).
+    val signingProps = File(System.getProperty("user.home"), ".bromnav-release/signing.properties")
+    signingConfigs {
+        if (signingProps.exists()) create("release") {
+            val p = Properties().apply { signingProps.inputStream().use { load(it) } }
+            storeFile = File(p.getProperty("storeFile")); storePassword = p.getProperty("storePassword")
+            keyAlias = p.getProperty("keyAlias"); keyPassword = p.getProperty("keyPassword")
+        }
     }
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
+    // Release APKs carry the offline maps (data/ is not in git: tools/update_data.sh fetches it)
+    sourceSets.getByName("release").assets.srcDir(layout.buildDirectory.dir("mapassets"))
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    androidResources { noCompress += listOf("dat", "brf") }
+    androidResources { noCompress += listOf("dat", "brf", "rd5", "pmtiles") }
     buildFeatures { buildConfig = true }
 }
 
@@ -45,3 +57,10 @@ dependencies {
     implementation("androidx.camera:camera-view:1.4.2")
     testImplementation("junit:junit:4.13.2")
 }
+
+val copyMapData = tasks.register<Copy>("copyMapData") {
+    from(rootProject.file("data/segments")) { include("*.rd5") }
+    from(rootProject.file("data/tiles")) { include("groningen.pmtiles") }
+    into(layout.buildDirectory.dir("mapassets/mapdata"))
+}
+tasks.matching { it.name == "mergeReleaseAssets" }.configureEach { dependsOn(copyMapData) }

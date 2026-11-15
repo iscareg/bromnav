@@ -8,7 +8,23 @@ import java.io.File
  * empty GeoJSON sources that the activity fills in.
  */
 object MapStyle {
-    fun json(pmtiles: File): String = """
+    private val LIGHT = mapOf(
+        "bg" to "#eceae4", "earth" to "#f2f0ea", "green" to "#d9e8c8", "ind" to "#e6e1e6", "water" to "#a9cbe8",
+        "bld" to "#dcd7cf", "bldline" to "#cbc4ba", "path" to "#bdb6ad", "cycle" to "#c8a2d6", "case" to "#c4bcb0",
+        "hwy" to "#f0b37a", "major" to "#fbe3a8", "minor" to "#ffffff", "label" to "#555049", "place" to "#3e3a35",
+        "halo" to "#ffffff", "routecase" to "#ffffff")
+    private val DARK = mapOf(
+        "bg" to "#15181c", "earth" to "#1b1f24", "green" to "#1f2b24", "ind" to "#24232a", "water" to "#173248",
+        "bld" to "#2a2e34", "bldline" to "#353a41", "path" to "#4a4f57", "cycle" to "#6d5578", "case" to "#0e1013",
+        "hwy" to "#8a6236", "major" to "#6b5f3e", "minor" to "#3a4048", "label" to "#b8bec7", "place" to "#d5dae1",
+        "halo" to "#15181c", "routecase" to "#0b0d10")
+
+    fun json(pmtiles: File, dark: Boolean = false): String {
+        val c = if (dark) DARK else LIGHT
+        return template(pmtiles).replace(Regex("""\{\{(\w+)\}\}""")) { c[it.groupValues[1]]!! }
+    }
+
+    private fun template(pmtiles: File): String = """
 {
   "version": 8,
   "glyphs": "asset://fonts/{fontstack}/{range}.pbf",
@@ -21,42 +37,42 @@ object MapStyle {
     "me":    { "type": "geojson", "data": { "type": "FeatureCollection", "features": [] } }
   },
   "layers": [
-    { "id": "bg", "type": "background", "paint": { "background-color": "#eceae4" } },
-    { "id": "earth", "type": "fill", "source": "base", "source-layer": "earth", "paint": { "fill-color": "#f2f0ea" } },
+    { "id": "bg", "type": "background", "paint": { "background-color": "{{bg}}" } },
+    { "id": "earth", "type": "fill", "source": "base", "source-layer": "earth", "paint": { "fill-color": "{{earth}}" } },
     { "id": "landuse-green", "type": "fill", "source": "base", "source-layer": "landuse",
       "filter": ["in", ["get", "kind"], ["literal", ["park", "grass", "forest", "wood", "garden", "meadow", "farmland", "cemetery", "golf_course", "nature_reserve", "playground", "recreation_ground", "pitch"]]],
-      "paint": { "fill-color": "#d9e8c8" } },
+      "paint": { "fill-color": "{{green}}" } },
     { "id": "landuse-ind", "type": "fill", "source": "base", "source-layer": "landuse",
       "filter": ["in", ["get", "kind"], ["literal", ["industrial", "railway", "commercial"]]],
-      "paint": { "fill-color": "#e6e1e6" } },
+      "paint": { "fill-color": "{{ind}}" } },
     { "id": "water", "type": "fill", "source": "base", "source-layer": "water", "filter": ["==", ["geometry-type"], "Polygon"],
-      "paint": { "fill-color": "#a9cbe8" } },
+      "paint": { "fill-color": "{{water}}" } },
     { "id": "water-line", "type": "line", "source": "base", "source-layer": "water", "filter": ["==", ["geometry-type"], "LineString"],
-      "paint": { "line-color": "#a9cbe8", "line-width": 1.5 } },
+      "paint": { "line-color": "{{water}}", "line-width": 1.5 } },
     { "id": "buildings", "type": "fill", "source": "base", "source-layer": "buildings", "minzoom": 15,
-      "paint": { "fill-color": "#dcd7cf", "fill-outline-color": "#cbc4ba" } },
+      "paint": { "fill-color": "{{bld}}", "fill-outline-color": "{{bldline}}" } },
 
     { "id": "paths", "type": "line", "source": "base", "source-layer": "roads", "minzoom": 13,
       "filter": ["==", ["get", "kind"], "path"],
-      "paint": { "line-color": ["match", ["get", "kind_detail"], "cycleway", "#c8a2d6", "#bdb6ad"],
+      "paint": { "line-color": ["match", ["get", "kind_detail"], "cycleway", "{{cycle}}", "{{path}}"],
                  "line-width": ["interpolate", ["linear"], ["zoom"], 13, 0.6, 18, 3],
                  "line-dasharray": [3, 1.5] } },
     { "id": "roads-case", "type": "line", "source": "base", "source-layer": "roads",
       "filter": ["in", ["get", "kind"], ["literal", ["highway", "major_road", "medium_road", "minor_road", "other"]]],
       "layout": { "line-cap": "round", "line-join": "round" },
-      "paint": { "line-color": "#c4bcb0",
+      "paint": { "line-color": "{{case}}",
                  "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 11, 1, 18,
                    ["match", ["get", "kind"], "highway", 22, "major_road", 18, "medium_road", 14, 10]] } },
     { "id": "roads", "type": "line", "source": "base", "source-layer": "roads",
       "filter": ["in", ["get", "kind"], ["literal", ["highway", "major_road", "medium_road", "minor_road", "other"]]],
       "layout": { "line-cap": "round", "line-join": "round" },
-      "paint": { "line-color": ["match", ["get", "kind"], "highway", "#f0b37a", "major_road", "#fbe3a8", "#ffffff"],
+      "paint": { "line-color": ["match", ["get", "kind"], "highway", "{{hwy}}", "major_road", "{{major}}", "{{minor}}"],
                  "line-width": ["interpolate", ["exponential", 1.6], ["zoom"], 11, 0.5, 18,
                    ["match", ["get", "kind"], "highway", 19, "major_road", 15, "medium_road", 11.5, 8]] } },
 
     { "id": "route-case", "type": "line", "source": "route",
       "layout": { "line-cap": "round", "line-join": "round" },
-      "paint": { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 6, 18, 16] } },
+      "paint": { "line-color": "{{routecase}}", "line-width": ["interpolate", ["linear"], ["zoom"], 12, 6, 18, 16] } },
     { "id": "route", "type": "line", "source": "route",
       "layout": { "line-cap": "round", "line-join": "round" },
       "paint": { "line-color": ["match", ["get", "cls"], "path", "#e8a000", "next", "#9aa4b1", "#1f6fe5"],
@@ -66,12 +82,12 @@ object MapStyle {
       "filter": ["has", "name"],
       "layout": { "symbol-placement": "line", "text-field": ["get", "name"], "text-font": ["Noto Sans Regular"],
                   "text-size": 12 },
-      "paint": { "text-color": "#555049", "text-halo-color": "#ffffff", "text-halo-width": 1.5 } },
+      "paint": { "text-color": "{{label}}", "text-halo-color": "{{halo}}", "text-halo-width": 1.5 } },
     { "id": "places", "type": "symbol", "source": "base", "source-layer": "places",
       "filter": ["in", ["get", "kind"], ["literal", ["locality", "neighbourhood", "macrohood"]]],
       "layout": { "text-field": ["get", "name"], "text-font": ["Noto Sans Medium"],
                   "text-size": ["match", ["get", "kind"], "locality", 15, 12] },
-      "paint": { "text-color": "#3e3a35", "text-halo-color": "#ffffff", "text-halo-width": 1.5 } },
+      "paint": { "text-color": "{{place}}", "text-halo-color": "{{halo}}", "text-halo-width": 1.5 } },
 
     { "id": "nogos", "type": "circle", "source": "nogos",
       "paint": { "circle-radius": 9, "circle-color": "#d93025", "circle-opacity": 0.35,
