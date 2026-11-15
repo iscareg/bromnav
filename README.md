@@ -21,12 +21,27 @@ Groningen area, so it works without a PC and without mobile data.
   ("martinitorn"), category words in Dutch and English ("pizza", "apotheek", "supermarkt",
   "tankstation"), ranked by match quality and distance.
 - Mixed with Dutch addresses (PDOK/BAG) and online OSM name search (Photon) for anything else.
+- In delivery mode the search only looks up addresses (receipts always have one).
 
 **Legal moped routing (offline)**
 - Embedded [BRouter](https://github.com/abrensch/brouter) with a custom profile
   (`app/src/main/assets/profiles/bromfiets.brf`).
 - Never uses cycle paths closed to mopeds (`moped=no`), roads with a compulsory moped path
   (`moped=use_sidepath`), motorroads or motorways. Uses fiets/bromfietspaden (`moped=designated`).
+- **Vehicle** (☰ → Vehicle): 🛵 bromfiets with yellow plate (45 km/h), 🛵 snorfiets with blue plate
+  (25 km/h, uses fietspaden `mofa=*`, not G13 / compulsory-cycle-path roads), or 🚲 e-bike up to
+  25 km/h without plate (bicycle rules). One profile, variable `vehicle`.
+- **Road access layer** (☰ → 🗺): colours every road by what the router believes for your vehicle:
+  green allowed, yellow moped/cycle path, red not allowed. It is computed on the phone from the
+  routing data with the routing profile itself.
+- **Your road corrections** (☰ → ✏ Edit road access, or long-press → "This road"): tap a road
+  section (junction to junction) to force it *allowed*, *allowed both directions* (ignore one-way)
+  or *forbidden*. The dialog shows the OSM tags behind the decision. Corrections are applied inside
+  BRouter (patched jar, `tools/brouter-patch/`), drawn as dashed blue/purple lines, and kept across
+  map updates as long as the road is not redrawn in OSM.
+- Destinations cut off from legal roads (e.g. an address point inside a campus with
+  `access=private` roads around it): the route ends at the nearest reachable spot and the app says
+  how far to walk.
 - Long-press the map → "Avoid here" if the map data is wrong somewhere.
 
 **Delivery runs**
@@ -95,6 +110,8 @@ tags the version, and publishes a GitHub release (needs the `gh` CLI). The signi
 
 - `tools/test_routes.py`: legality regression test of the routing profile against a local BRouter
   server (any route over a forbidden segment fails).
+- `tools/brouter-patch/build.sh`: rebuilds `app/libs/brouter-1.7.10-ro.jar` (BRouter 1.7.10 +
+  the per-link override hook).
 - `tools/dbg.sh`: remote control of a debug build over adb (add stops, plan, simulate a ride, OCR an
   image, translate, read the full state as JSON). See the header of the script.
 - `tools/ocr_view.py`: OCR photos with the phone and show the recognised boxes on the PC.
@@ -114,6 +131,8 @@ tags the version, and publishes a GitHub release (needs the `gh` CLI). The signi
 | `MapStyle.kt`, `Pal.kt` | light/dark map style and UI palette |
 | `PdokGeocoder.kt`, `AddressSearch.kt`, `SearchHistory.kt` | address + place search dialog (PDOK, Photon) |
 | `PoiIndex.kt` | offline smart place search (OSM) |
+| `Vehicle.kt` | yellow / blue plate / e-bike setting |
+| `RoadLayer.kt`, `RoadOverrides.kt` | road access layer; your allowed / forbidden road sections |
 | `SpeedModel.kt`, `History.kt`, `StatsActivity.kt` | speed multiplier, stats |
 | `DebugBridge.kt` | debug-only remote control used by `tools/dbg.sh` |
 

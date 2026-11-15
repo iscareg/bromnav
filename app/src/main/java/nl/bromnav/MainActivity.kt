@@ -137,6 +137,12 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private var legOdoM = 0.0
     private var lapOdoM = 0.0
     private var odoFix: Location? = null
+    // road access layer / your road corrections
+    private var roadLayer: RoadLayer? = null
+    private var showLegal = false
+    private var editRoads = false
+    private var legalSeq = 0
+    private lateinit var roadChip: TextView
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -144,6 +150,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         Pal.init(this)
+        Vehicle.load(this)
+        RoadOverrides.init(filesDir)
         MapLibre.getInstance(this)
         store = RunStore(this)
         speed = SpeedModel(this)
@@ -156,7 +164,9 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val tiles = MapData.tilesFile(this)
         if (!MapData.haveData(this)) { showSetup(files); return }
 
-        engine = BRouterEngine(segDir, installProfiles())
+        val profile = installProfiles()
+        engine = BRouterEngine(segDir, profile)
+        roadLayer = RoadLayer(segDir, profile)
         Thread { val t0 = System.currentTimeMillis(); pois = MapData.openPois(this); poisLoadMs = System.currentTimeMillis() - t0 }.start()
         planner = Planner(engine!!, speed)
 
@@ -367,6 +377,11 @@ class MainActivity : AppCompatActivity(), LocationListener {
             text = "UNDO"; textSize = 16f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#ffd54a"))
             background = null; setOnClickListener { val a = undoAction; hideUndo.run(); a?.invoke() }
         }, LinearLayout.LayoutParams(-2, dp(48)))
+        roadChip = tv(13f, "#ffffff").apply {
+            background = card(Color.parseColor("#E0202020"), 14); setPadding(dp(12), dp(6), dp(12), dp(6)); gravity = Gravity.CENTER
+            visibility = View.GONE; setOnClickListener { roadChipMenu() }
+        }
+        bottom.addView(roadChip, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(8) })
         bottom.addView(undoBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         bottom.addView(infoCard, LinearLayout.LayoutParams(-1, -2))
 
@@ -402,6 +417,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
             m.setMinZoomPreference(9.0); m.setMaxZoomPreference(19.0)
             m.setStyle(Style.Builder().fromJson(MapStyle.json(tiles, Pal.dark))) { s -> style = s; s.addImage("scooter", scooterBitmap()); showRestaurant(); refreshAll(); lastFix?.let { onLocationChanged(it, simulating) } }
             m.addOnMapLongClickListener { ll -> onLongPress(LatLon(ll.latitude, ll.longitude)); true }
+            m.addOnMapClickListener { ll -> if (editRoads) { pickRoad(LatLon(ll.latitude, ll.longitude)); true } else false }
+            m.addOnCameraIdleListener { if (showLegal) refreshLegal() }
             m.addOnCameraMoveStartedListener { reason ->
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) follow = false
             }
@@ -478,6 +495,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             pm.menu.add(0, 5, 0, "End navigation")
         } else pm.menu.add(0, 6, 0, "Clear all stops")
         pm.menu.add(0, 7, 0, "Remove all avoid marks")
+        addRoadItems(pm)
         pm.menu.add(0, 10, 0, "🧭 Switch to simple nav")
         pm.menu.add(0, 11, 0, "🌓 Theme: ${Pal.choice(this)} (tap to change)")
         pm.menu.add(0, 12, 0, "⬇ Update maps from internet")
@@ -496,6 +514,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 8 -> if (simulating) stopSimulation() else simulate()
                 10 -> setAppMode(true)
                 11 -> cycleTheme()
+                else -> onRoadItem(item.itemId)
             }
             true
         }
@@ -515,6 +534,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         pm.menu.add(0, 3, 0, if (voice.enabled) "Voice: on (tap to mute)" else "Voice: off (tap to enable)")
         if (mode == Mode.NAV) pm.menu.add(0, 5, 0, "End navigation")
         pm.menu.add(0, 7, 0, "Remove all avoid marks")
+        addRoadItems(pm)
         pm.menu.add(0, 10, 0, "🛵 Switch to delivery mode")
         pm.menu.add(0, 11, 0, "🌓 Theme: ${Pal.choice(this)} (tap to change)")
         pm.menu.add(0, 12, 0, "⬇ Update maps from internet")
@@ -529,17 +549,144 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 10 -> setAppMode(false)
                 11 -> cycleTheme()
                 12 -> confirmMapDownload(restart = true)
+                else -> onRoadItem(item.itemId)
             }
             true
         }
         pm.show()
     }
 
+    // ------------------------------------------------------------------ vehicle, road access layer, road corrections
+
+    private fun addRoadItems(pm: PopupMenu) {
+        pm.menu.add(0, 20, 0, "${Vehicle.current.icon} Vehicle: ${Vehicle.current.label}")
+        pm.menu.add(0, 21, 0, if (showLegal) "🗺 Road access layer: ON (tap to hide)" else "🗺 Show road access layer")
+        pm.menu.add(0, 22, 0, if (editRoads) "✏ Stop editing roads" else "✏ Edit road access (tap a road)")
+        val n = RoadOverrides.all().size
+        if (n > 0) pm.menu.add(0, 23, 0, "Remove all my road corrections ($n)")
+    }
+
+    private fun onRoadItem(id: Int) {
+        when (id) {
+            20 -> chooseVehicle()
+            21 -> setLegal(!showLegal, false)
+            22 -> if (editRoads) setLegal(showLegal, false) else setLegal(true, true)
+            23 -> AlertDialog.Builder(this).setMessage("Remove all ${RoadOverrides.all().size} road corrections (allowed / forbidden sections)?")
+                .setPositiveButton("Remove") { _, _ -> RoadOverrides.clear(); roadsChanged() }.setNegativeButton("Cancel", null).show()
+        }
+    }
+
+    private fun chooseVehicle() {
+        val vs = Vehicle.entries
+        AlertDialog.Builder(this).setTitle("What do you ride?")
+            .setSingleChoiceItems(vs.map { "${it.icon}  ${it.label}" }.toTypedArray(), vs.indexOf(Vehicle.current)) { d, w ->
+                d.dismiss()
+                if (vs[w] == Vehicle.current) return@setSingleChoiceItems
+                Vehicle.set(this, vs[w]); toast("Routing for: ${vs[w].label}")
+                worker.execute { roadLayer?.clear() }
+                roadsChanged("Vehicle changed")
+            }.show()
+    }
+
+    private fun setLegal(show: Boolean, edit: Boolean) {
+        showLegal = show; editRoads = edit && show
+        if (!editRoads) setGeoJson("selroad", EMPTY_FC)
+        roadChip.visibility = if (showLegal) View.VISIBLE else View.GONE
+        roadChip.text = (if (editRoads) "✏ Tap a road to allow / forbid it\n" else "") +
+            "🟩 allowed  🟨 ${Vehicle.current.pathName}  🟥 not allowed  🟦 your allowed  🟪 your forbidden" + "   ✖"
+        if (showLegal) refreshLegal() else setGeoJson("legal", EMPTY_FC)
+        if (show && !edit) toast("Road access for ${Vehicle.current.short}. Long-press or ✏ edit mode to correct a road.")
+    }
+
+    private fun roadChipMenu() {
+        val items = arrayOf(if (editRoads) "Stop editing (keep layer)" else "✏ Edit roads (tap to allow / forbid)", "Hide road layer")
+        AlertDialog.Builder(this).setItems(items) { _, w ->
+            when (w) { 0 -> setLegal(true, !editRoads); 1 -> setLegal(false, false) }
+        }.show()
+    }
+
+    /** Recompute the visible part of the road layer (background, latest request wins). */
+    private fun refreshLegal() {
+        val m = map ?: return
+        val zoom = m.cameraPosition.zoom
+        if (zoom < 13.5) { setGeoJson("legal", EMPTY_FC); if (showLegal) toast("Zoom in to see road access"); return }
+        val b = m.projection.visibleRegion.latLngBounds
+        val my = ++legalSeq
+        val withFoot = zoom >= 16
+        worker.execute {
+            if (my != legalSeq) return@execute
+            val json = runCatching {
+                val all = roadLayer!!.links(b.latitudeSouth, b.longitudeWest, b.latitudeNorth, b.longitudeEast)
+                RoadLayer.geoJson(RoadLayer.visible(all, b.latitudeSouth, b.longitudeWest, b.latitudeNorth, b.longitudeEast, withFoot))
+            }.onFailure { Log.w("BromNav", "road layer", it) }.getOrNull() ?: return@execute
+            ui.post { if (my == legalSeq && showLegal) setGeoJson("legal", json) }
+        }
+    }
+
+    private fun drawOverrides() {
+        val links = RoadOverrides.all().map { RoadLayer.Link(it.a, it.b, it.geom, if (it.mode == RoadOverrides.FORBID) RoadLayer.FORBIDDEN_OVR else RoadLayer.ALLOWED_OVR, it.tags) }
+        setGeoJson("overrides", RoadLayer.geoJson(links) { it.cls })
+    }
+
+    /** after a vehicle change or a road correction: redraw, recompute legs, reroute */
+    private fun roadsChanged(reason: String = "Road access changed") {
+        drawOverrides()
+        if (showLegal) { setLegal(true, editRoads) }
+        if (mode == Mode.NAV) reroute(reason)
+        worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+        refreshAll()
+    }
+
+    private fun pickRoad(p: LatLon) {
+        worker.execute {
+            val l = runCatching { roadLayer!!.nearest(p, 30.0) }.getOrNull()
+            ui.post { if (l == null) toast("No road found here") else roadDialog(l) }
+        }
+    }
+
+    private fun roadDialog(l: RoadLayer.Link) {
+        setGeoJson("selroad", RoadLayer.geoJson(listOf(l)) { 0 })
+        val ov = RoadOverrides.get(l.a, l.b)
+        val v = Vehicle.current
+        val state = when {
+            l.cls == RoadLayer.FORBIDDEN -> "⛔ NOT allowed for ${v.short} (map data)"
+            l.oneway -> "↗ allowed for ${v.short}, but ONE WAY"
+            l.cls == RoadLayer.PATH -> "🟨 allowed: ${v.pathName}"
+            else -> "🟩 allowed road"
+        }
+        val yours = when (ov?.mode) {
+            RoadOverrides.ALLOW -> "\nYour correction: ✅ ALLOWED"
+            RoadOverrides.ALLOW_BOTH -> "\nYour correction: ✅ ALLOWED both directions"
+            RoadOverrides.FORBID -> "\nYour correction: ⛔ FORBIDDEN"
+            else -> ""
+        }
+        val tags = l.tags.split(' ').filter { !it.startsWith("reversedirection") }.joinToString("\n")
+        val opts = ArrayList<Pair<String, () -> Unit>>()
+        fun put(mode: Int) { RoadOverrides.set(RoadOverrides.Entry(l.a, l.b, mode, l.geom, l.tags)); setGeoJson("selroad", EMPTY_FC); roadsChanged() }
+        if (ov?.mode != RoadOverrides.ALLOW) opts.add("✅ Allow this section" to { put(RoadOverrides.ALLOW) })
+        if (ov?.mode != RoadOverrides.ALLOW_BOTH) opts.add("✅ Allow, both directions (ignore one-way)" to { put(RoadOverrides.ALLOW_BOTH) })
+        if (ov?.mode != RoadOverrides.FORBID) opts.add("⛔ Forbid this section" to { put(RoadOverrides.FORBID) })
+        if (ov != null) opts.add("↩ Remove my correction (use map data)" to { RoadOverrides.remove(l.a, l.b); setGeoJson("selroad", EMPTY_FC); roadsChanged() })
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
+        box.addView(tv(15f, Pal.text, true).apply { text = state + yours })
+        box.addView(tv(12f, Pal.sub).apply { text = "${l.lengthM.toInt()} m · OSM tags:\n$tags"; setPadding(0, dp(6), 0, 0) })
+        val dlg = AlertDialog.Builder(this).setTitle("Road section").setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setNegativeButton("Close") { _, _ -> setGeoJson("selroad", EMPTY_FC) }
+            .setOnCancelListener { setGeoJson("selroad", EMPTY_FC) }.create()
+        box.addView(View(this), LinearLayout.LayoutParams(-1, dp(8)))
+        for ((label, action) in opts) box.addView(tv(17f, Pal.text).apply {
+            text = label; setPadding(0, dp(12), 0, dp(12))
+            setOnClickListener { dlg.dismiss(); action() }
+        })
+        dlg.show()
+    }
+
     // ------------------------------------------------------------------ search / stops
 
     private fun openSearch() {
+        // delivery mode: addresses only (receipts always have one); simple nav: places + addresses
         AddressSearch.show(this, if (simple) "Where to?" else "Add stop", history = searchHistory.all(),
-            pois = pois, near = here() ?: Config.RESTAURANT) { a0 ->
+            pois = if (simple) pois else null, places = simple, near = here() ?: Config.RESTAURANT) { a0 ->
             // drop the distance ("· 990 m") so history entries don't show stale distances
             val a = a0.copy(label = a0.label.replace(Regex("""\s·\s[\d.,]+\s(m|km)$"""), ""))
             searchHistory.add(a)
@@ -624,8 +771,9 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     private fun onLongPress(p: LatLon) {
         if (simple) {
-            AlertDialog.Builder(this).setItems(arrayOf("Navigate here", "Avoid here (not allowed for bromfiets)", "Remove avoid marks nearby")) { _, w ->
+            AlertDialog.Builder(this).setItems(arrayOf("Navigate here", "Avoid here (not allowed for ${Vehicle.current.short})", "Remove avoid marks nearby", "🛣 This road: allow / forbid…")) { _, w ->
                 when (w) {
+                    3 -> pickRoad(p)
                     0 -> navigateTo(Stop(System.currentTimeMillis(), "Pin %.5f, %.5f".format(Locale.US, p.lat, p.lon), p, street = "Pin", houseNo = "📍"))
                     1 -> { store.nogos.add(NoGo(p, 15)); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoiding that spot") }
                     2 -> { store.nogos.removeAll { Geo.dist(it.p, p) < 60 }; store.save(); refreshAll() }
@@ -633,9 +781,10 @@ class MainActivity : AppCompatActivity(), LocationListener {
             }.show()
             return
         }
-        val items = arrayOf("Add stop here", "Avoid here (not allowed for bromfiets)", "Remove avoid marks nearby")
+        val items = arrayOf("Add stop here", "Avoid here (not allowed for ${Vehicle.current.short})", "Remove avoid marks nearby", "🛣 This road: allow / forbid…")
         AlertDialog.Builder(this).setItems(items) { _, which ->
             when (which) {
+                3 -> pickRoad(p)
                 0 -> addStop(Stop(System.currentTimeMillis(), "Pin %.5f, %.5f".format(Locale.US, p.lat, p.lon), p, street = "Pin", houseNo = "📍"))
                 1 -> { store.nogos.add(NoGo(p, 15)); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoiding that spot") }
                 2 -> { store.nogos.removeAll { Geo.dist(it.p, p) < 60 }; store.save(); refreshAll() }
@@ -722,6 +871,11 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private fun setRoute(r: Route) {
         navigator = Navigator(r); voice.newRoute(r); rerouting = false
         drawRoute(r); refreshAll()
+        if (r.walkM > 25) {
+            val t = "The last ${r.walkM} m have no legal road for ${Vehicle.current.short}: park at the end of the route and walk. " +
+                "If you may ride there, correct it with ☰ → ✏ Edit road access."
+            Toast.makeText(this, t, Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun reroute(reason: String) {
@@ -1075,7 +1229,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val t = pr.nextTransition
         val useTransition = t != null && (h == null || pr.distToTransitionM < pr.distToHintM - 20)
         if (useTransition) {
-            arrowTv.text = if (t!!.to == WayClass.MOPED_PATH) "🛵" else "🛣"
+            arrowTv.text = if (t!!.to == WayClass.MOPED_PATH) Vehicle.current.icon else "🛣"
             instrTv.text = "${Navigator.fmtDist(pr.distToTransitionM)}  ${Navigator.describeTransition(t).replaceFirstChar { it.uppercase() }}"
         } else if (h != null) {
             val (arrow, text) = Navigator.describe(h)
@@ -1085,7 +1239,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         } else {
             arrowTv.text = "↑"; instrTv.text = "Continue ${Navigator.fmtDist(pr.remainingM)}"
         }
-        subTv.text = when (pr.currentClass) { WayClass.MOPED_PATH -> "on moped path"; WayClass.ROAD -> "on road"; else -> "" }
+        subTv.text = when (pr.currentClass) { WayClass.MOPED_PATH -> "on ${Vehicle.current.pathName}"; WayClass.ROAD -> "on road"; else -> "" }
     }
 
     // ------------------------------------------------------------------ info card
@@ -1229,12 +1383,13 @@ class MainActivity : AppCompatActivity(), LocationListener {
         stopsRv.layoutParams = stopsRv.layoutParams.apply {
             height = if (adapter.itemCount > 4) dp(4 * 52) else ViewGroup.LayoutParams.WRAP_CONTENT
         }
-        updateInfoCard(); drawStops()
+        updateInfoCard(); drawStops(); drawOverrides()
         if (System.currentTimeMillis() - lastEtaCalc > 2000) updateEtas()
     }
 
     // ------------------------------------------------------------------ map drawing
 
+    private val EMPTY_FC = """{"type":"FeatureCollection","features":[]}"""
     private fun setGeoJson(source: String, json: String) { style?.getSourceAs<GeoJsonSource>(source)?.setGeoJson(json) }
 
     private fun drawRoute(r: Route?) {
@@ -1303,7 +1458,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 if (a == null) { done("not found: $q"); return@post }
                 searchHistory.add(a)
                 navigateTo(Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, street = a.street, houseNo = a.houseNo))
-                done("navigating to ${a.label}")
+                done("navigating to ${a.label} @ ${a.pos.lat},${a.pos.lon}")
             }
         }
     }
@@ -1366,8 +1521,33 @@ class MainActivity : AppCompatActivity(), LocationListener {
     internal fun dbgSim(on: Boolean) { if (on) { if (!simulating) simulate() } else stopSimulation() }
     internal fun dbgList(open: Boolean) { listOpen = open; refreshAll() }
 
+    internal fun dbgVehicle(v: Int): String { Vehicle.set(this, Vehicle.entries.first { it.code == v }); worker.execute { roadLayer?.clear() }; roadsChanged("Vehicle changed"); return Vehicle.current.label }
+    internal fun dbgLegal(on: Boolean, edit: Boolean): String { setLegal(on, edit); return "ok" }
+    internal fun dbgCamera(lat: Double, lon: Double, z: Double): String { follow = false; map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(lat, lon), z)); return "ok" }
+    /** set = allow | both | forbid | reset | null (just inspect) */
+    internal fun dbgRoad(lat: Double, lon: Double, set: String?, done: (String) -> Unit) {
+        worker.execute {
+            val t0 = System.currentTimeMillis()
+            val l = roadLayer!!.nearest(LatLon(lat, lon), 30.0)
+            val ms = System.currentTimeMillis() - t0
+            ui.post {
+                if (l == null) { done("no road"); return@post }
+                when (set) {
+                    "allow" -> RoadOverrides.set(RoadOverrides.Entry(l.a, l.b, RoadOverrides.ALLOW, l.geom, l.tags))
+                    "both" -> RoadOverrides.set(RoadOverrides.Entry(l.a, l.b, RoadOverrides.ALLOW_BOTH, l.geom, l.tags))
+                    "forbid" -> RoadOverrides.set(RoadOverrides.Entry(l.a, l.b, RoadOverrides.FORBID, l.geom, l.tags))
+                    "reset" -> RoadOverrides.remove(l.a, l.b)
+                }
+                if (set != null) roadsChanged()
+                done("cls=${l.cls} oneway=${l.oneway} len=${l.lengthM.toInt()} ovr=${RoadOverrides.get(l.a, l.b)?.mode} tags=${l.tags} (lookup $ms ms, cells ${roadLayer!!.lastLoadMs} ms)")
+            }
+        }
+    }
+
     internal fun dbgState(): org.json.JSONObject {
         val o = org.json.JSONObject()
+        o.put("vehicle", Vehicle.current.short).put("roadOverrides", RoadOverrides.all().size).put("showLegal", showLegal).put("editRoads", editRoads)
+            .put("roadLayerMs", roadLayer?.lastLoadMs)
         o.put("appMode", if (simple) "simple" else "delivery").put("chooserOpen", chooser != null)
             .put("searchHistory", org.json.JSONArray(searchHistory.all().take(5).map { it.label }))
         o.put("mode", mode.name).put("simulating", simulating).put("listOpen", listOpen).put("manualOrder", store.manualOrder)

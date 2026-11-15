@@ -104,8 +104,8 @@ class Navigator(val route: Route) {
         }
 
         fun describeTransition(t: Transition): String = when (t.to) {
-            WayClass.MOPED_PATH -> "move onto the moped path" + (t.side?.let { " on the $it" } ?: "")
-            WayClass.ROAD -> "leave the moped path and join the road"
+            WayClass.MOPED_PATH -> "move onto the ${Vehicle.current.pathName}" + (t.side?.let { " on the $it" } ?: "")
+            WayClass.ROAD -> "leave the ${Vehicle.current.pathName} and join the road"
         }
 
         fun fmtDist(m: Double): String = when {

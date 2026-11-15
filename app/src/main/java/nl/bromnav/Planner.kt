@@ -16,7 +16,7 @@ class Planner(private val engine: BRouterEngine, private val speed: SpeedModel) 
     private fun key(a: LatLon, b: LatLon) = "${a.lonLat()}>${b.lonLat()}"
 
     fun leg(a: LatLon, b: LatLon, nogos: List<NoGo>): Leg {
-        val nk = nogos.joinToString { it.p.lonLat() }
+        val nk = nogos.joinToString { it.p.lonLat() } + "|v${Vehicle.current.code}|o${RoadOverrides.version}"
         if (nk != nogoKey) { cache.clear(); nogoKey = nk }
         cache[key(a, b)]?.let { return it }
         val l = if (Geo.dist(a, b) < 15) Leg(0.0, 0.0) else try {

@@ -61,6 +61,10 @@ object DebugBridge {
                         "end" -> { a.dbgEnd(); reply("ok") }
                         "list" -> { a.dbgList(true); reply("ok") }
                         "nolist" -> { a.dbgList(false); reply("ok") }
+                        "vehicle" -> reply(a.dbgVehicle(i.getStringExtra("v")!!.toInt()))
+                        "legal" -> reply(a.dbgLegal(i.getStringExtra("on") != "0", i.getStringExtra("edit") == "1"))
+                        "road" -> a.dbgRoad(i.getStringExtra("lat")!!.toDouble(), i.getStringExtra("lon")!!.toDouble(), i.getStringExtra("set"), reply)
+                        "camera" -> reply(a.dbgCamera(i.getStringExtra("lat")!!.toDouble(), i.getStringExtra("lon")!!.toDouble(), i.getStringExtra("z")!!.toDouble()))
                         else -> reply(a.dbgState().toString())
                     }
                 } catch (e: Exception) { reply("ERROR $e") }

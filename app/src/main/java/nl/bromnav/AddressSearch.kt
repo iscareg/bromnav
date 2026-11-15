@@ -19,7 +19,7 @@ import java.util.concurrent.Executors
  *  - recent searches (while the field is empty)
  *  - offline place search (shops, restaurants, landmarks... from OpenStreetMap) – instant, as you type
  *  - Dutch addresses (PDOK / BAG, online)
- *  - OSM name search (Photon, online) when the local index finds little
+ *  - OSM name search (Photon, online) when the local index finds little (only with places = true)
  * Queries that look like an address (contain a number) list addresses first.
  */
 object AddressSearch {
@@ -27,12 +27,12 @@ object AddressSearch {
     private val net = Executors.newSingleThreadExecutor()
 
     fun show(a: Activity, title: String = "Add stop", initial: String = "", history: List<PdokGeocoder.Address> = emptyList(),
-             pois: PoiIndex? = null, near: LatLon = Config.RESTAURANT, onPick: (PdokGeocoder.Address) -> Unit) {
+             pois: PoiIndex? = null, places: Boolean = false, near: LatLon = Config.RESTAURANT, onPick: (PdokGeocoder.Address) -> Unit) {
         val ui = Handler(Looper.getMainLooper())
         val dp = a.resources.displayMetrics.density
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding((16 * dp).toInt(), (8 * dp).toInt(), (16 * dp).toInt(), 0) }
         val et = EditText(a).apply {
-            hint = if (pois != null) "Name, place or address (e.g. Jumbo, pizza, Vismarkt 10)" else "Street + number, or postcode + number"
+            hint = if (places) "Name, place or address (e.g. Jumbo, pizza, Vismarkt 10)" else "Street + number, or postcode + number"
             isSingleLine = true; textSize = 18f
         }
         val results = ArrayList<PdokGeocoder.Address>()
@@ -79,7 +79,7 @@ object AddressSearch {
                     if (my != seq) return@postDelayed
                     net.execute {
                         val addr = runCatching { PdokGeocoder.search(q, near, 6) }.onFailure { Log.w("BromNav", "pdok", it) }.getOrNull()
-                        val names = if (!addressFirst && (pois == null || localHits.size < 3))
+                        val names = if (places && !addressFirst && (pois == null || localHits.size < 3))
                             runCatching { PhotonGeocoder.search(q, near) }.getOrNull() ?: emptyList() else emptyList()
                         ui.post {
                             if (my != seq) return@post

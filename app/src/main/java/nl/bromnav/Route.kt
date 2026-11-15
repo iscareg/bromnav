@@ -35,6 +35,10 @@ class Route(
     val lengthM: Int,
     val timeS: Int,
 ) {
+    /** > 0: the destination itself is not reachable legally; the route ends this far from it (park and walk) */
+    var walkM = 0
+    /** > 0: the start is not on a legal road; the route starts this far away */
+    var startWalkM = 0
     val transitions: List<Transition> by lazy {
         val out = ArrayList<Transition>()
         for (i in 1 until segs.size) {

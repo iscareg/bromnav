@@ -21,6 +21,12 @@ object Geo {
         return 2 * R * atan2(sqrt(h), sqrt(1 - h))
     }
 
+    /** Point at distance d (m) and bearing (deg) from p. */
+    fun offset(p: LatLon, bearingDeg: Double, d: Double): LatLon {
+        val b = Math.toRadians(bearingDeg)
+        return LatLon(p.lat + d * cos(b) / 111_195.0, p.lon + d * sin(b) / (111_195.0 * cos(Math.toRadians(p.lat))))
+    }
+
     /** Initial bearing a -> b in degrees 0..360. */
     fun bearing(a: LatLon, b: LatLon): Double {
         val p1 = Math.toRadians(a.lat); val p2 = Math.toRadians(b.lat)

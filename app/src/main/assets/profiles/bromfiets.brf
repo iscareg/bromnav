@@ -11,11 +11,21 @@
 #   * motor_vehicle / vehicle / access = no|private         -> forbidden unless moped=yes|designated
 #   * destination / delivery                                -> allowed with a penalty (we deliver!)
 #
-# Speeds: kinematic model, vmax 45 km/h.
+# The same file also serves two other vehicles (global variable "vehicle", set by the app):
+#   1 = snorfiets (blue plate, 25 km/h): OSM "mofa". Uses fietspaden (G11) and roads; not G13
+#       (mofa=no), not where a compulsory cycle path runs alongside (bicycle/mofa=use_sidepath).
+#   2 = e-bike up to 25 km/h without plate: legally a bicycle, follows the "bicycle" tags.
+#
+# Speeds: kinematic model, vmax 45 km/h (25 for vehicle 1 and 2).
 #
 ---model:btools.router.KinematicModel
 
 ---context:global
+
+assign vehicle = 0   # %vehicle% | 0 = bromfiets (yellow plate 45), 1 = snorfiets (blue plate 25), 2 = e-bike 25 (no plate) | number
+assign isbrom = equal vehicle 0
+assign issnor = equal vehicle 1
+assign isbike = equal vehicle 2
 
 assign validForCars         = true
 assign validForBikes        = false
@@ -25,9 +35,9 @@ assign validForBikes        = false
 assign allow_untagged_cycleway = false   # %allow_untagged_cycleway% | Use cycleways without moped tag | boolean
 assign avoid_fast_roads        = true    # %avoid_fast_roads% | Prefer roads <= 50 km/h | boolean
 
-assign vmax             = 45     # %vmax% | Target speed (km/h) | number
-assign totalweight      = 190    # bike + rider + delivery box (kg)
-assign f_roll           = 28     # N  (190 kg * 9.81 * 0.015)
+assign vmax             = if isbrom then 45 else 25
+assign totalweight      = if isbike then 120 else 190    # vehicle + rider + delivery box (kg)
+assign f_roll           = if isbike then 12 else 28      # N  (190 kg * 9.81 * 0.015)
 assign f_air            = 0.38   # N/(m/s)^2  0.5*cw*A*rho
 assign f_recup          = 400    # N braking force (~2 m/s^2)
 assign p_standby        = 0
@@ -46,6 +56,10 @@ assign isresidentialorliving = or highway=residential|living_street living_stree
 
 assign mopedexplicitok = moped=yes|designated
 assign mopedexplicitno = moped=no|use_sidepath
+assign mofaexplicitok  = or mofa=yes|designated mopedexplicitok
+assign mofaexplicitno  = mofa=no|use_sidepath
+assign bikeexplicitok  = bicycle=yes|designated|permissive|destination
+assign bikeexplicitno  = bicycle=no|use_sidepath|dismount
 
 # path-like ways (cycle paths, foot paths ...)
 assign ispathlike = highway=cycleway|footway|path|pedestrian|steps|bridleway|platform|corridor|busway
@@ -63,9 +77,10 @@ assign isfastroad = or highway=motorway|motorway_link motorroad=yes
 assign defaultaccess =
        if isfastroad then false
        else if isbusonly then false
-       else if highway=cycleway then allow_untagged_cycleway
+       else if highway=cycleway then ( if isbrom then allow_untagged_cycleway else true )
+       else if highway=path|footway then ( if isbrom then false else bicycle=yes|designated )
        else if ispathlike then false
-       else if highway=track then tracktype=grade1
+       else if highway=track then ( if isbrom then tracktype=grade1 else true )
        else if route=ferry then true
        else isroadlike
 
@@ -77,13 +92,19 @@ assign genericaccess =
                             defaultaccess
                             and defaultaccess access=yes|permissive|designated|destination|delivery|customers
                      and defaultaccess vehicle=yes|permissive|designated|destination
-              and defaultaccess motor_vehicle=yes|permissive|designated|destination
+              if isbike then defaultaccess   # motor_vehicle=no does not bind a bicycle
+              else and defaultaccess motor_vehicle=yes|permissive|designated|destination
 
+# "mopedaccess" = may the selected vehicle use this way
 assign mopedaccess =
        if isfastroad then false
-       else if mopedexplicitno then false
-       else if mopedexplicitok then true
-       else genericaccess
+       else if isbrom then
+            ( if mopedexplicitno then false else if mopedexplicitok then true else genericaccess )
+       else if issnor then
+            ( if mofaexplicitno then false else if mofaexplicitok then true
+              else if and isroadlike bicycle=use_sidepath then false   # compulsory fietspad alongside
+              else genericaccess )
+       else ( if bikeexplicitno then false else if bikeexplicitok then true else genericaccess )
 
 assign isdestinationonly =
        or access=destination|delivery|customers
@@ -103,7 +124,8 @@ assign initialcost =
 
 assign accessspeedlimit = if mopedaccess then 999 else 0
 
-assign isbadoneway = if reversedirection=yes then ( if oneway= then junction=roundabout else oneway=yes|true|1 ) else oneway=-1
+assign isbadoneway = if and isbike oneway:bicycle=no then false
+                    else if reversedirection=yes then ( if oneway= then junction=roundabout else oneway=yes|true|1 ) else oneway=-1
 # a one-way cycle path (oneway:bicycle) also binds mopeds on a bromfietspad
 assign isbadonewaypath = and isbromfietspad if reversedirection=yes then oneway:bicycle=yes else false
 assign onewayspeedlimit = if or isbadoneway isbadonewaypath then 0 else 999
@@ -203,7 +225,7 @@ assign dummyUsage = add moped= add mofa= add maxspeed= add bicycle= add segregat
 ---context:node
 
 # a bromfiets passes bollards and cycle barriers; gates need explicit access
-assign nodeaccess =
+assign motornodeaccess =
        switch motor_vehicle=
               switch vehicle=
                      switch access=
@@ -211,6 +233,18 @@ assign nodeaccess =
                             access=yes|permissive|designated|destination
                      vehicle=yes|permissive|designated|destination
               motor_vehicle=yes|permissive|designated|destination
+
+# an e-bike is a bicycle: motor_vehicle=no does not apply, bicycle=* decides
+assign bikenodeaccess =
+       if bicycle=no|dismount then false
+       else if bicycle=yes|designated|permissive|destination then true
+       else switch vehicle=
+              switch access=
+                     not barrier=gate|lift_gate|block|chain|swing_gate|turnstile|kissing_gate|stile|fence|wall
+                     access=yes|permissive|designated|destination
+              vehicle=yes|permissive|designated|destination
+
+assign nodeaccess = if isbike then bikenodeaccess else motornodeaccess
 
 assign initialcost =
        switch nodeaccess

@@ -53,7 +53,7 @@ class VoiceGuide(ctx: Context) : TextToSpeech.OnInitListener {
                 (if (merged) ", then ${Navigator.describeTransition(t!!)}" else "")
             if (p.distToHintM in now..early && spoken.add("h${h.idx}e") && p.distToHintM > now + 40)
                 say("In ${Navigator.fmtDist(p.distToHintM)}, ${text.replaceFirstChar { it.lowercase() }}")
-            if (p.distToHintM < now && spoken.add("h${h.idx}n")) say(text0 + if (merged) ", onto the ${if (t!!.to == WayClass.MOPED_PATH) "moped path" else "road"}" else "")
+            if (p.distToHintM < now && spoken.add("h${h.idx}n")) say(text0 + if (merged) ", onto the ${if (t!!.to == WayClass.MOPED_PATH) Vehicle.current.pathName else "road"}" else "")
         }
         if (t != null && !merged) {
             val text = Navigator.describeTransition(t)
