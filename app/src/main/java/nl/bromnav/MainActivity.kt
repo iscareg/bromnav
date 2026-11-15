@@ -119,6 +119,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private var rerouting = false
     private var arrivedSaid = false
     private var sideSaid = false
+    private var earlySaid = false
     private var lastProgress: Navigator.Progress? = null
     private var etaByStop: Map<Long, Long> = emptyMap()
     private var lastEtaCalc = 0L
@@ -316,7 +317,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             m.uiSettings.isTiltGesturesEnabled = false
             m.uiSettings.isCompassEnabled = false
             m.setMinZoomPreference(9.0); m.setMaxZoomPreference(19.0)
-            m.setStyle(Style.Builder().fromJson(MapStyle.json(tiles))) { s -> style = s; showRestaurant(); refreshAll() }
+            m.setStyle(Style.Builder().fromJson(MapStyle.json(tiles))) { s -> style = s; s.addImage("scooter", scooterBitmap()); showRestaurant(); refreshAll(); lastFix?.let { onLocationChanged(it, simulating) } }
             m.addOnMapLongClickListener { ll -> onLongPress(LatLon(ll.latitude, ll.longitude)); true }
             m.addOnCameraMoveStartedListener { reason ->
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) follow = false
@@ -373,7 +374,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 5 -> endNav()
                 6 -> confirmClear()
                 7 -> { store.nogos.clear(); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoid marks removed") }
-                8 -> if (simulating) simulating = false else simulate()
+                8 -> if (simulating) stopSimulation() else simulate()
             }
             true
         }
@@ -406,10 +407,16 @@ class MainActivity : AppCompatActivity(), LocationListener {
         fun field(hint: String, value: String, type: Int = InputType.TYPE_CLASS_TEXT) = EditText(this).apply { this.hint = hint; setText(value); inputType = type }
         val orderEt = field("Order number", s.orderNo)
         val timeEt = field("Deliver before (HH:MM)", s.deadline?.let { hm(it) } ?: "", InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME)
+        val earliestEt = field("Exact time: not before (HH:MM) — empty = ASAP", s.earliest?.let { hm(it) } ?: "", InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME)
+        var pay = s.payment
+        val payBtn = Button(this).apply { isAllCaps = false; textSize = 15f }
+        fun showPay() { payBtn.text = "Payment: " + when (pay) { "online" -> "✅ paid online"; "cash" -> "💶 cash"; "card" -> "💳 PIN at the door"; else -> "unknown" } + "  (tap to change)" }
+        showPay()
+        payBtn.setOnClickListener { pay = when (pay) { "online" -> "cash"; "cash" -> "card"; "card" -> ""; else -> "online" }; showPay() }
         val phoneEt = field("Phone", s.phone, InputType.TYPE_CLASS_PHONE)
         val nameEt = field("Name (doorbell)", s.name, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PERSON_NAME)
         val noteEt = field("Message from customer", s.note, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE).apply { maxLines = 4; textSize = 14f }
-        listOf<View>(addrBtn, orderEt, timeEt, phoneEt, nameEt, noteEt).forEach { box.addView(it) }
+        listOf<View>(addrBtn, orderEt, timeEt, earliestEt, payBtn, phoneEt, nameEt, noteEt).forEach { box.addView(it) }
         if (s.phone.isNotEmpty()) box.addView(Button(this).apply {
             text = "📞 Call ${s.phone}"; isAllCaps = false
             setOnClickListener { startActivity(Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:${s.phone}"))) }
@@ -422,6 +429,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 } ?: false
                 s.orderNo = orderEt.text.toString().trim()
                 s.deadline = parseHm(timeEt.text.toString())
+                s.earliest = parseHm(earliestEt.text.toString())
+                s.payment = pay
                 s.phone = phoneEt.text.toString().trim(); s.name = nameEt.text.toString().trim()
                 val noteText = noteEt.text.toString().trim()
                 val noteChanged = noteText != s.note
@@ -502,7 +511,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         legTarget = store.pending().firstOrNull()
         val target = legTarget?.pos ?: Config.RESTAURANT
         val from = here() ?: Config.RESTAURANT
-        arrivedSaid = false; sideSaid = false; lastProgress = null
+        arrivedSaid = false; sideSaid = false; earlySaid = false; lastProgress = null
         banner.visibility = View.VISIBLE
         instrTv.text = "Calculating route…"; subTv.text = ""; arrowTv.text = "…"
         refreshAll()
@@ -659,10 +668,54 @@ class MainActivity : AppCompatActivity(), LocationListener {
     @SuppressLint("MissingPermission")
     private fun startGps() {
         val lm = getSystemService(LOCATION_SERVICE) as LocationManager
-        lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, this, Looper.getMainLooper())
-        if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
-            lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 5000L, 0f, this, Looper.getMainLooper())
-        (lm.getLastKnownLocation(LocationManager.GPS_PROVIDER) ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER))?.let { onLocationChanged(it) }
+        // GPS for speed/bearing on the road; the fused provider (GPS + Wi-Fi + cell) gives a position
+        // immediately, also indoors; network as a last resort
+        val providers = buildList {
+            add(LocationManager.GPS_PROVIDER)
+            if (android.os.Build.VERSION.SDK_INT >= 31) add(LocationManager.FUSED_PROVIDER)
+            add(LocationManager.NETWORK_PROVIDER)
+        }.filter { runCatching { lm.isProviderEnabled(it) }.getOrDefault(false) }
+        for (pr in providers) {
+            val interval = if (pr == LocationManager.NETWORK_PROVIDER) 5000L else 1000L
+            runCatching {
+                if (android.os.Build.VERSION.SDK_INT >= 31) {
+                    // explicit high accuracy: the legacy call defaults to LOW_POWER on Android 12+
+                    val req = android.location.LocationRequest.Builder(interval)
+                        .setQuality(if (pr == LocationManager.NETWORK_PROVIDER) android.location.LocationRequest.QUALITY_BALANCED_POWER_ACCURACY
+                                    else android.location.LocationRequest.QUALITY_HIGH_ACCURACY)
+                        .setMinUpdateIntervalMillis(interval).build()
+                    lm.requestLocationUpdates(pr, req, mainExecutor, this)
+                } else lm.requestLocationUpdates(pr, interval, 0f, this, Looper.getMainLooper())
+            }
+        }
+        providers.mapNotNull { runCatching { lm.getLastKnownLocation(it) }.getOrNull() }
+            .maxByOrNull { it.time }?.let { onLocationChanged(it) }
+        ui.postDelayed(gpsWatch, 5000)
+    }
+
+    /** Last real (non-simulated) fix, and a watchdog that marks the position stale. */
+    private var lastRealFix: Location? = null
+    private var centeredOnMe = false
+    private val gpsWatch = object : Runnable {
+        override fun run() {
+            val f = lastRealFix
+            if (!simulating && (f == null || System.currentTimeMillis() - f.time > 15_000)) speedTv.text = "no GPS"
+            ui.postDelayed(this, 5000)
+        }
+    }
+
+    private fun isGps(l: Location) = l.provider == LocationManager.GPS_PROVIDER
+
+    private fun drawMe(p: LatLon, acc: Float) {
+        setGeoJson("me", """{"type":"Feature","geometry":{"type":"Point","coordinates":[${p.lon},${p.lat}]},"properties":{"bearing":${heading ?: 0f},"acc":$acc}}""")
+    }
+
+    private fun stopSimulation() {
+        simulating = false
+        val real = lastRealFix
+        lastFix = real
+        if (real != null) { gpsFilter.reset(); onLocationChanged(smooth(real), false) }
+        else setGeoJson("me", """{"type":"FeatureCollection","features":[]}""")
     }
 
     // ---- debug: fake GPS that rides along the current route at ~25 km/h
@@ -687,33 +740,57 @@ class MainActivity : AppCompatActivity(), LocationListener {
                     speed = v.toFloat(); bearing = Geo.bearing(a, b).toFloat(); accuracy = 5f; time = System.currentTimeMillis()
                 }
                 onLocationChanged(l, fromSim = true)
-                if (along < route.cum.last()) ui.postDelayed(this, 1000) else simulating = false
+                if (along < route.cum.last()) ui.postDelayed(this, 1000) else stopSimulation()
             }
         }
         ui.post(tick)
     }
 
-    override fun onLocationChanged(loc: Location) { if (!simulating) onLocationChanged(loc, false) }
+    override fun onLocationChanged(loc: Location) {
+        // keep only useful fixes: a fresh GPS fix beats fused/network ones
+        val prevReal = lastRealFix
+        if (!isGps(loc) && prevReal != null && isGps(prevReal) && loc.time - prevReal.time < 5_000) return
+        lastRealFix = loc
+        if (!simulating) onLocationChanged(smooth(loc), false)
+    }
+
+    private val gpsFilter = GpsFilter()
+
+    /** Kalman-smoothed copy of a raw fix (speed/bearing/accuracy kept from the raw fix). */
+    private fun smooth(loc: Location): Location {
+        val p = gpsFilter.process(loc.latitude, loc.longitude, loc.accuracy, loc.time,
+            if (loc.hasSpeed()) loc.speed else null, if (loc.hasBearing()) loc.bearing else null)
+        return Location(loc).apply { latitude = p.lat; longitude = p.lon }
+    }
 
     private fun onLocationChanged(loc: Location, fromSim: Boolean) {
-        val prev = lastFix
-        if (loc.provider == LocationManager.NETWORK_PROVIDER && prev != null &&
-            prev.provider == LocationManager.GPS_PROVIDER && loc.time - prev.time < 10_000) return
         lastFix = loc
         val p = LatLon(loc.latitude, loc.longitude)
-        if (loc.provider == LocationManager.GPS_PROVIDER) {
-            speedTv.text = if (loc.hasSpeed()) "${Math.round(loc.speed * 3.6)} km/h" else "– km/h"
+        // speed field doubles as GPS status: km/h with real GPS, "±N m" for a Wi-Fi/cell position
+        speedTv.text = when {
+            isGps(loc) && loc.hasSpeed() -> "${Math.round(loc.speed * 3.6)} km/h"
+            isGps(loc) -> "– km/h"
+            else -> "±${loc.accuracy.toInt()} m"
+        }
+        if (!fromSim && !centeredOnMe && mode == Mode.PLAN && map != null) {
+            centeredOnMe = true
+            map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 15.0), 800)
+        }
+        if (isGps(loc)) {
             if (loc.accuracy < 25) {
                 odoFix?.let { o -> val d = o.distanceTo(loc); if (d > 3 && d < 200) { legOdoM += d; lapOdoM += d } }
                 odoFix = loc
             }
         }
-        setGeoJson("me", """{"type":"Feature","geometry":{"type":"Point","coordinates":[${p.lon},${p.lat}]},"properties":{}}""")
+        updateHeading(loc)
+        drawMe(p, loc.accuracy)
 
         val nav = navigator
         if (mode == Mode.NAV && nav != null) {
             val pr = nav.update(p)
             lastProgress = pr
+            // on the route (within 20 m): show the marker exactly on it - no sideways jitter
+            if (pr.offRouteM < 20) drawMe(pr.snapped, loc.accuracy)
             showProgress(pr)
             voice.onProgress(pr, if (loc.hasSpeed()) loc.speed.toDouble() else 6.0)
             if (nav.offRoute && loc.accuracy < 30) reroute("Off route — recalculating…")
@@ -723,9 +800,18 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 val side = nav.destinationSide(t.pos)
                 voice.say("Number ${t.number()} is " + (side?.let { "on your $it" } ?: "ahead"))
             }
+            if (t != null && !earlySaid) t.earliest?.let { e ->
+                val arrive = System.currentTimeMillis() + (pr.remainingS * speed.factor(pr.remainingM) * 1000).toLong()
+                if (arrive < e - 60_000 && pr.remainingM < 1500) {
+                    earlySaid = true
+                    voice.say("You are ${(e - arrive) / 60_000} minutes early. ${spokenStop(t)} is for ${hm(e)}, not earlier.")
+                }
+            }
             if (pr.remainingM < 30 && !arrivedSaid) {
                 arrivedSaid = true
-                voice.say(t?.let { "You have arrived at ${spokenStop(it)}" } ?: "You are back at ${Config.RESTAURANT_NAME}")
+                voice.say(t?.let { "You have arrived at ${spokenStop(it)}" + when (it.payment) {
+                    "cash" -> ". Collect cash payment."; "card" -> ". Card payment at the door."; else -> "" } }
+                    ?: "You are back at ${Config.RESTAURANT_NAME}")
             }
             updateInfoCard()
             if (System.currentTimeMillis() - lastEtaCalc > 15_000) updateEtas()
@@ -733,15 +819,56 @@ class MainActivity : AppCompatActivity(), LocationListener {
         if (follow && map != null) moveCamera(loc, mode == Mode.NAV)
     }
 
+    /**
+     * Direction of travel: GPS bearing while riding (> ~5 km/h); otherwise from the movement
+     * between fixes (also works for fused/Wi-Fi positions). Kept when standing still, so the map
+     * doesn't snap back to north at every traffic light.
+     */
+    private var heading: Float? = null
+    private var headingFix: Location? = null
+    private fun updateHeading(loc: Location) {
+        if (loc.hasBearing() && loc.hasSpeed() && loc.speed > 1.5f) { heading = loc.bearing; headingFix = loc; return }
+        val prev = headingFix
+        if (prev == null) { headingFix = loc; return }
+        val d = prev.distanceTo(loc)
+        if (d > maxOf(8f, loc.accuracy * 0.8f)) {      // moved clearly more than the position noise
+            heading = prev.bearingTo(loc).let { if (it < 0) it + 360 else it }
+            headingFix = loc
+        } else if (loc.time - prev.time > 30_000) headingFix = loc
+    }
+
     private fun moveCamera(loc: Location, navStyle: Boolean) {
         val m = map ?: return
         val b = CameraPosition.Builder().target(LatLng(loc.latitude, loc.longitude))
+        heading?.let { b.bearing(it.toDouble()) }          // heading up while following
         if (navStyle) {
             b.zoom(17.0).tilt(40.0)
-            if (loc.hasBearing() && loc.speed > 2) b.bearing(loc.bearing.toDouble())
             b.padding(0.0, mapView!!.height * 0.30, 0.0, 0.0)
         } else b.zoom(maxOf(m.cameraPosition.zoom, 15.0))
         m.animateCamera(CameraUpdateFactory.newCameraPosition(b.build()), 800)
+    }
+
+    /** Top-down scooter marker (pointing up = direction of travel), drawn in code. */
+    private fun scooterBitmap(): android.graphics.Bitmap {
+        val sz = 120
+        val bmp = android.graphics.Bitmap.createBitmap(sz, sz, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(bmp)
+        val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        val cx = sz / 2f
+        p.color = Color.WHITE; c.drawCircle(cx, cx, 56f, p)                                  // white disc for contrast
+        p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 5f; p.color = Color.parseColor("#1f6fe5")
+        c.drawCircle(cx, cx, 54f, p); p.style = android.graphics.Paint.Style.FILL
+        p.color = Color.parseColor("#14335e")
+        c.drawRoundRect(cx - 9, 16f, cx + 9, 40f, 8f, 8f, p)                                // front wheel
+        c.drawRoundRect(cx - 9, 82f, cx + 9, 106f, 8f, 8f, p)                               // rear wheel
+        p.color = Color.parseColor("#1f6fe5")
+        c.drawRoundRect(cx - 17, 36f, cx + 17, 92f, 14f, 14f, p)                            // body / seat
+        p.color = Color.parseColor("#14335e"); p.strokeWidth = 7f; p.strokeCap = android.graphics.Paint.Cap.ROUND
+        c.drawLine(cx - 28, 40f, cx + 28, 40f, p)                                           // handlebar
+        p.color = Color.parseColor("#ffd54a")
+        val tri = android.graphics.Path().apply { moveTo(cx, 6f); lineTo(cx - 9, 18f); lineTo(cx + 9, 18f); close() }
+        c.drawPath(tri, p)                                                                  // headlight = front
+        return bmp
     }
 
     private fun showProgress(pr: Navigator.Progress) {
@@ -786,7 +913,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
             bigLeftTv.visibility = if (side == "left") View.VISIBLE else View.INVISIBLE
             bigRightTv.visibility = if (side == "right") View.VISIBLE else View.INVISIBLE
             bigNumTv.text = next.number().ifEmpty { "?" }
-            bigSubTv.text = "${next.streetName()} · ${Navigator.fmtDist(pr.remainingM)}" +
+            bigSubTv.text = (next.paymentIcon().takeIf { it.isNotEmpty() && it != "✅ paid" }?.let { "$it   " } ?: "") +
+                "${next.streetName()} · ${Navigator.fmtDist(pr.remainingM)}" +
                 (if (next.orderNo.isNotEmpty()) " · #${next.orderNo}" else "") +
                 (side?.let { " · on the $it" } ?: "") +
                 (if (next.name.isNotEmpty()) "\n🔔 ${next.name}" else "") +
@@ -808,15 +936,25 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 if (next.orderNo.isNotEmpty()) parts.add("#${next.orderNo}")
                 if (mode == Mode.NAV && pr != null) {
                     val etaS = pr.remainingS * speed.factor(pr.remainingM)
-                    parts.add(Navigator.fmtDist(pr.remainingM)); parts.add("ETA ${hm(System.currentTimeMillis() + (etaS * 1000).toLong())}")
+                    val arrive = System.currentTimeMillis() + (etaS * 1000).toLong()
+                    parts.add(Navigator.fmtDist(pr.remainingM)); parts.add("ETA ${hm(arrive)}")
+                    next.earliest?.let { e -> if (arrive < e) parts.add("⏸ ${(e - arrive) / 60_000} min early") }
                 } else etaByStop[next.id]?.let { parts.add("ETA ${hm(it)}") }
-                next.deadline?.let { parts.add("due ${hm(it)}") }
+                timeLabel(next).takeIf { it.isNotEmpty() }?.let { parts.add(it) }
+                next.paymentIcon().takeIf { it.isNotEmpty() }?.let { parts.add(it) }
                 if (next.note.isNotEmpty()) parts.add("📝 note")
                 if (pending.size > 1) parts.add("+${pending.size - 1} more")
                 detailTv.text = parts.joinToString(" · ")
             }
         }
         updateStars()
+    }
+
+    /** "⏰ 17:30" for exact-time orders (not earlier), "⚡ by 20:25" for ASAP, "" without times. */
+    private fun timeLabel(s: Stop): String = when {
+        s.earliest != null -> "⏰ ${hm(s.earliest!!)}"
+        s.deadline != null -> "⚡ by ${hm(s.deadline!!)}"
+        else -> ""
     }
 
     // ------------------------------------------------------------------ ETAs / urgency
@@ -958,7 +1096,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 if (r == null) {
                     o.put("parsed", false).put("text", org.json.JSONArray(lines.map { it.text }))
                 } else {
-                    o.put("parsed", true).put("postcode", r.postcode).put("houseNo", r.houseNo).put("street", r.street)
+                    o.put("parsed", true).put("requestedTime", r.requestedTime).put("payment", r.payment).put("postcode", r.postcode).put("houseNo", r.houseNo).put("street", r.street)
                         .put("city", r.city).put("name", r.name != null).put("phone", r.phone != null)
                         .put("orderNo", r.orderNo).put("deliveryTime", r.deliveryTime).put("asap", r.asap).put("note", r.note)
                     val a = runCatching { PdokGeocoder.byPostcode(r.postcode!!, r.houseNo!!) }.getOrNull()
@@ -966,7 +1104,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
                     if (add && a != null) ui.post {
                         val st = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, r.orderNo ?: "",
                             r.deliveryTime?.let { parseHm(it) }, street = a.street, houseNo = a.houseNo,
-                            phone = r.phone ?: "", note = r.note ?: "", name = r.name ?: "")
+                            phone = r.phone ?: "", note = r.note ?: "", name = r.name ?: "",
+                            earliest = r.requestedTime?.let { parseHm(it) }, payment = r.payment ?: "")
                         store.stops.add(st); store.save(); lastEtaCalc = 0; refreshAll()
                     }
                 }
@@ -978,12 +1117,13 @@ class MainActivity : AppCompatActivity(), LocationListener {
     internal fun dbgCancel(n: Int): String { val st = store.pending().getOrNull(n - 1) ?: return "no stop $n"; cancelStop(st); return "ok" }
     internal fun dbgRestore(n: Int): String { val st = store.cancelled().getOrNull(n - 1) ?: return "no cancelled $n"; restoreStop(st); return "ok" }
 
-    internal fun dbgAdd(q: String, order: String, due: String?, done: (String) -> Unit) {
+    internal fun dbgAdd(q: String, order: String, due: String?, done: (String) -> Unit, earliest: String? = null, pay: String? = null) {
         net.execute {
             val a = runCatching { PdokGeocoder.search(q).firstOrNull() }.getOrNull()
             ui.post {
                 if (a == null) { done("not found: $q"); return@post }
-                val s = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, order, due?.let { parseHm(it) }, street = a.street, houseNo = a.houseNo)
+                val s = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, order, due?.let { parseHm(it) }, street = a.street, houseNo = a.houseNo,
+                    earliest = earliest?.let { parseHm(it) }, payment = pay ?: "")
                 store.stops.add(s); store.save(); lastEtaCalc = 0; refreshAll()
                 worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
                 done("added ${s.label}")
@@ -996,7 +1136,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     internal fun dbgDelivered() = delivered()
     internal fun dbgSkip() = skip()
     internal fun dbgEnd() = endNav()
-    internal fun dbgSim(on: Boolean) { if (on) { if (!simulating) simulate() } else simulating = false }
+    internal fun dbgSim(on: Boolean) { if (on) { if (!simulating) simulate() } else stopSimulation() }
     internal fun dbgList(open: Boolean) { listOpen = open; refreshAll() }
 
     internal fun dbgState(): org.json.JSONObject {
@@ -1010,7 +1150,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         store.pending().forEachIndexed { i, s ->
             stops.put(org.json.JSONObject().put("n", i + 1).put("label", s.label).put("street", s.streetName()).put("no", s.number())
                 .put("order", s.orderNo).put("due", s.deadline?.let { hm(it) }).put("eta", etaByStop[s.id]?.let { hm(it) })
-                .put("stars", starsOf(s)).put("slackMin", slackMin(s)))
+                .put("stars", starsOf(s)).put("slackMin", slackMin(s)).put("notBefore", s.earliest?.let { hm(it) }).put("pay", s.payment))
         }
         o.put("stops", stops)
         o.put("cancelled", org.json.JSONArray(store.cancelled().map { it.label }))
@@ -1082,7 +1222,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
             h.title.text = (if (s.orderNo.isNotEmpty()) "#${s.orderNo}  " else "") + s.label
             val parts = ArrayList<String>()
             etaByStop[s.id]?.let { parts.add("ETA ${hm(it)}") }
-            s.deadline?.let { parts.add("due ${hm(it)}") }
+            timeLabel(s).takeIf { it.isNotEmpty() }?.let { parts.add(it) }
+            s.paymentIcon().takeIf { it.isNotEmpty() }?.let { parts.add(it) }
             starsOf(s)?.let { parts.add("★".repeat(it) + "☆".repeat(5 - it)) }
             slackMin(s)?.let { parts.add(if (it >= 0) "+$it min" else "${-it} min LATE") }
             if (parts.isEmpty()) parts.add("tap to set order no. / deadline")

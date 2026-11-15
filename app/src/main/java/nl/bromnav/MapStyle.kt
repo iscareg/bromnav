@@ -84,9 +84,11 @@ object MapStyle {
                   "text-allow-overlap": true, "text-ignore-placement": true },
       "paint": { "text-color": "#ffffff" } },
     { "id": "me-halo", "type": "circle", "source": "me",
-      "paint": { "circle-radius": 18, "circle-color": "#1f6fe5", "circle-opacity": 0.18 } },
-    { "id": "me", "type": "circle", "source": "me",
-      "paint": { "circle-radius": 8, "circle-color": "#1f6fe5", "circle-stroke-color": "#ffffff", "circle-stroke-width": 3 } }
+      "paint": { "circle-radius": 26, "circle-color": "#1f6fe5", "circle-opacity": 0.15 } },
+    { "id": "me", "type": "symbol", "source": "me",
+      "layout": { "icon-image": "scooter", "icon-size": 0.55, "icon-rotate": ["get", "bearing"],
+                  "icon-rotation-alignment": "map", "icon-pitch-alignment": "map",
+                  "icon-allow-overlap": true, "icon-ignore-placement": true } }
   ]
 }
 """

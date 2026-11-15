@@ -21,7 +21,13 @@ data class Stop(
     var note: String = "",
     /** customer name (for the doorbell); never written to history */
     var name: String = "",
+    /** exact-time order: do not arrive before this (epoch ms); null = ASAP */
+    var earliest: Long? = null,
+    /** "online" | "cash" | "card" | "" */
+    var payment: String = "",
 ) {
+    fun paymentIcon() = when (payment) { "online" -> "✅ paid"; "cash" -> "💶 CASH"; "card" -> "💳 PIN"; else -> "" }
+
     /** street / number, parsed from the label if PDOK fields are missing (e.g. old data) */
     fun streetName() = street.ifEmpty { Regex("""^(.*?)\s+\d""").find(label)?.groupValues?.get(1) ?: label }
     fun number() = houseNo.ifEmpty { Regex("""\s(\d+[^,\s]*)""").find(label)?.groupValues?.get(1) ?: "" }
@@ -33,6 +39,7 @@ data class Stop(
         .put("orderNo", orderNo).put("deadline", deadline ?: -1L).put("delivered", delivered)
         .put("street", street).put("houseNo", houseNo).put("cancelled", cancelled)
         .put("phone", phone).put("note", note).put("name", name)
+        .put("earliest", earliest ?: -1L).put("payment", payment)
 
     companion object {
         fun fromJson(o: JSONObject) = Stop(
@@ -40,6 +47,7 @@ data class Stop(
             o.optString("orderNo"), o.optLong("deadline", -1L).takeIf { it > 0 }, o.optBoolean("delivered"),
             o.optString("street"), o.optString("houseNo"), o.optBoolean("cancelled"),
             o.optString("phone"), o.optString("note"), o.optString("name"),
+            o.optLong("earliest", -1L).takeIf { it > 0 }, o.optString("payment"),
         )
     }
 }

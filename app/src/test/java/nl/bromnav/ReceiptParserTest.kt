@@ -34,6 +34,7 @@ class ReceiptParserTest {
         assertEquals("Groningen", r.city); assertEquals("Jan Jansen", r.name); assertEquals("0612345678", r.phone)
         assertEquals("ABCD12-015", r.orderNo); assertEquals("20:25", r.deliveryTime); assertTrue(r.asap)
         assertEquals("Voor bezorger: hard op deurbel 2 drukken, hij werkt niet altijd.", r.note)
+        assertNull(r.requestedTime); assertEquals("online", r.payment)
     }
 
     @Test fun englishReceiptWithLetterAndSplitColumns() {
@@ -56,6 +57,15 @@ class ReceiptParserTest {
         assertEquals("9713XY", r.postcode); assertEquals("32A", r.houseNo); assertEquals("Teststraat", r.street)
         assertEquals("WXYZ99-008", r.orderNo); assertEquals("17:30", r.deliveryTime); assertEquals(false, r.asap)
         assertEquals("+31612345678", r.phone); assertNull(r.note)
+        assertEquals("17:30", r.requestedTime); assertEquals("online", r.payment)
+    }
+
+    @Test fun cashAndExactTime() {
+        val r = ReceiptParser.parse(lines(
+            "Bezorgtijd: 19:00 (gevr.: 19:00)", "Betaalwijze: Contant",
+            "Klant", "Kees", "Molenweg 4", "9712 CD Groningen"))!!
+        assertEquals("19:00", r.deliveryTime); assertEquals("19:00", r.requestedTime)
+        assertEquals(false, r.asap); assertEquals("cash", r.payment)
     }
 
     @Test fun lowercasePostcodeAndNoHeaderAbove() {

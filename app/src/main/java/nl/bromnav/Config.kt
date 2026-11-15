@@ -11,6 +11,9 @@ object Config {
     /** Handover time at each door, used in ETA/urgency. */
     const val SERVICE_S = 60.0
 
+    /** Exact-time orders: arriving up to this many minutes after the requested time is still on time. */
+    const val SCHEDULED_GRACE_MIN = 10
+
     /** Urgency thresholds (minutes of slack). */
     const val SLACK_GREEN_MIN = 10
 }

@@ -36,6 +36,8 @@ object ReceiptParser {
         val deliveryTime: String?,     // "HH:MM" promised delivery time = deadline
         val asap: Boolean,             // requested "ZSM"/"ASAP"
         val note: String?,             // courier note ("Voor bezorger: ...")
+        val requestedTime: String? = null, // "(req.: 17:30)": customer asked for an exact time -> not earlier
+        val payment: String? = null,   // "online" | "cash" | "card"
     ) {
         val hasAddress get() = postcode != null && houseNo != null
         /** key used to decide that two scans read the same address */
@@ -49,6 +51,8 @@ object ReceiptParser {
     private val ORDER_NO = Regex("""\b([A-Z0-9]{4,10}\s?-\s?\d{2,4})\b""")
     private val LBL_TIME = Regex("""(bezorgtijd|levertijd|delivery\s*time|bezorgd\s*om)""", RegexOption.IGNORE_CASE)
     private val LBL_ORDER = Regex("""(order\s*n[ro]\.?|bestel\s*n[ro]\.?|bestelnummer|ordernummer|order\s*number)""", RegexOption.IGNORE_CASE)
+    private val LBL_PAY = Regex("""(betaalwijze|betaling|payment)""", RegexOption.IGNORE_CASE)
+    private val REQUESTED = Regex("""\(\s*(gevr|req)[a-z]*\.?\s*:?\s*([^)]*)\)""", RegexOption.IGNORE_CASE)
     private val ASAP = Regex("""\b(zsm|asap|z\.s\.m\.)\b""", RegexOption.IGNORE_CASE)
     private val HEADER = Regex("""^\s*(bestelling|order|klant|customer|info|items?)\s*$""", RegexOption.IGNORE_CASE)
     private val NOT_A_STREET = Regex("""(€|\d+\s*[x×]\b|stuks|\bst\)|\bnr\b|tijd|time|betaal|payment|bron|source)""", RegexOption.IGNORE_CASE)
@@ -158,6 +162,29 @@ object ReceiptParser {
             }
         }
         if (!asap) asap = ls.any { Regex("""\((gevr|req)[^)]*(zsm|asap)""", RegexOption.IGNORE_CASE).containsMatchIn(it.text) }
+        // requested part: "(gevr.: ZSM)" = as soon as possible, "(req.:17:30)" = exact time
+        var requestedTime: String? = null
+        for (l in ls) {
+            val m = REQUESTED.find(l.text) ?: continue
+            val v = m.groupValues[2]
+            if (ASAP.containsMatchIn(v)) { asap = true; break }
+            TIME.find(v)?.let { requestedTime = fmt(it) }
+            if (requestedTime != null) break
+        }
+
+        // payment: "Betaalwijze: Online betaald" / "Payment: Online paid" / Contant / Pin
+        fun classify(v: String): String? = when {
+            Regex("""(online|betaald|paid|ideal|prepaid|vooraf)""", RegexOption.IGNORE_CASE).containsMatchIn(v) -> "online"
+            Regex("""(contant|cash)""", RegexOption.IGNORE_CASE).containsMatchIn(v) -> "cash"
+            Regex("""(\bpin\b|pinnen|card|kaart)""", RegexOption.IGNORE_CASE).containsMatchIn(v) -> "card"
+            else -> null
+        }
+        var payment: String? = null
+        val payLabel = ls.indexOfFirst { LBL_PAY.containsMatchIn(it.text) }
+        if (payLabel >= 0) payment = valueFor(ls, payLabel, LBL_PAY)?.let { classify(it) }
+        if (payment == null) payment = ls.firstNotNullOfOrNull { l ->
+            if (Regex("""^(online\s+(betaald|paid)|contant|cash|pinnen)\b""", RegexOption.IGNORE_CASE).containsMatchIn(l.text)) classify(l.text) else null
+        }
 
         // --- order number
         var orderNo: String? = null
@@ -166,7 +193,7 @@ object ReceiptParser {
         if (orderNo == null) orderNo = ls.firstNotNullOfOrNull { ORDER_NO.find(it.text)?.value?.takeIf { v -> v.any(Char::isLetter) } }
         orderNo = orderNo?.replace(Regex("""\s*-\s*"""), "-")
 
-        return Receipt(postcode, houseNo, street, city, name, phone, orderNo, time, asap, note)
+        return Receipt(postcode, houseNo, street, city, name, phone, orderNo, time, asap, note, requestedTime, payment)
     }
 
     /** Text of the value belonging to label line [i]: rest of the same line, else the line to its right. */

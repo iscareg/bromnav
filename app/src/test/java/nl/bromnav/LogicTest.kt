@@ -61,4 +61,19 @@ class LogicTest {
         val r = TspSolver.solve(t, listOf(1, 2), 3, mapOf(1 to 600.0), 0.0)
         assertEquals(listOf(1, 2), r.order)
     }
+
+    @Test fun exactTimeOrderIsVisitedAtItsTime() {
+        // node 1: exact time at t=400 (deadline 400+600 grace), node 2: ASAP, no deadline.
+        // 0->2->1 arrives at node 1 at t=700 (300 s after the requested time: legal but sloppy);
+        // 0->1 arrives at 300, waits until 400, then 2. Waiting 100 s is better.
+        val t = arrayOf(
+            doubleArrayOf(0.0, 300.0, 300.0, 0.0),
+            doubleArrayOf(300.0, 0.0, 400.0, 300.0),
+            doubleArrayOf(300.0, 400.0, 0.0, 300.0),
+            doubleArrayOf(0.0, 300.0, 300.0, 0.0),
+        )
+        val r = TspSolver.solve(t, listOf(1, 2), 3, mapOf(1 to 1000.0), 0.0, mapOf(1 to 400.0))
+        assertEquals(listOf(1, 2), r.order)
+        assertEquals(400.0, r.arrivals[0], 0.01)   // waited for the requested time
+    }
 }

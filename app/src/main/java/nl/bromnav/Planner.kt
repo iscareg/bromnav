@@ -48,14 +48,19 @@ class Planner(private val engine: BRouterEngine, private val speed: SpeedModel) 
             t[i][j] = l.timeS * speed.factor(l.distM)
         }
         val deadlines = HashMap<Int, Double?>()
-        stops.forEachIndexed { k, s -> deadlines[k + 1] = s.deadline?.let { (it - nowMs) / 1000.0 } }
-        val r = TspSolver.solve(t, (1..stops.size).toList(), n - 1, deadlines, Config.SERVICE_S)
+        val earliest = HashMap<Int, Double?>()
+        stops.forEachIndexed { k, s ->
+            deadlines[k + 1] = s.deadline?.let { (it - nowMs) / 1000.0 }
+            earliest[k + 1] = s.earliest?.let { (it - nowMs) / 1000.0 }
+        }
+        val r = TspSolver.solve(t, (1..stops.size).toList(), n - 1, deadlines, Config.SERVICE_S, earliest)
         return Plan(r.order.map { stops[it - 1] }, r.arrivals, r.totalS, r.lateS)
     }
 
     /**
      * Personal ETAs (epoch ms) for [order] when the first stop is [firstLegRemainingS] away
-     * (already speed-corrected).
+     * (already speed-corrected). For exact-time orders the ETA is the requested time when you
+     * would be early (you wait), and the following stops shift accordingly.
      */
     fun etas(order: List<Stop>, firstLegRemainingS: Double, nogos: List<NoGo>, nowMs: Long = System.currentTimeMillis()): List<Long> {
         val out = ArrayList<Long>()
@@ -65,6 +70,7 @@ class Planner(private val engine: BRouterEngine, private val speed: SpeedModel) 
                 val l = leg(order[k - 1].pos, s.pos, nogos)
                 tS += Config.SERVICE_S + l.timeS * speed.factor(l.distM)
             }
+            s.earliest?.let { e -> val es = (e - nowMs) / 1000.0; if (tS < es) tS = es }
             out.add(nowMs + (tS * 1000).toLong())
         }
         return out

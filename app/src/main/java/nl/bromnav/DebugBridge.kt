@@ -35,7 +35,8 @@ object DebugBridge {
                 try {
                     when (cmd) {
                         "clear" -> { a.dbgClear(); reply("ok") }
-                        "add" -> a.dbgAdd(i.getStringExtra("q") ?: "", i.getStringExtra("order") ?: "", i.getStringExtra("due"), reply)
+                        "add" -> a.dbgAdd(i.getStringExtra("q") ?: "", i.getStringExtra("order") ?: "", i.getStringExtra("due"), reply,
+                            i.getStringExtra("notbefore"), i.getStringExtra("pay"))
                         "go" -> { a.dbgGo(); reply("ok") }
                         "move" -> { a.dbgMove(i.getStringExtra("from")!!.toInt(), i.getStringExtra("to")!!.toInt()); reply("ok") }
                         "auto" -> { a.dbgAuto(); reply("ok") }

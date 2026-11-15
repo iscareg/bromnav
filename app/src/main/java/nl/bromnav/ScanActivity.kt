@@ -65,25 +65,29 @@ class ScanActivity : AppCompatActivity() {
         const val EXTRA_TYPE_INSTEAD = "type"    // user wants to type an address instead
         const val EXTRA_EXISTING = "existing"    // keys ("postcode no") already in the run
         private const val CONFIRMATIONS = 2
-        /** the address must be read this many times in a row, identically, before the BAG check */
+        /** identical address readings (not necessarily consecutive) needed before the BAG check */
         private const val ADDRESS_STREAK = 3
     }
 
     /**
-     * A value is trusted once it was read [need] times in a row identically. Frames that do not
-     * show the field don't break the streak; a different reading restarts it.
+     * A value is trusted once exactly the same reading was seen [need] times (not necessarily in a
+     * row: a misread frame in between only adds a vote for the wrong value). [best] is the
+     * most-read value so far; the user can also accept it by hand with [accept].
      */
     private class Votes(val need: Int = CONFIRMATIONS) {
+        val counts = HashMap<String, Int>()
         var locked: String? = null
-        var best: String? = null   // current candidate (shown greyed while not locked)
-        var streak = 0
+        var best: String? = null
+        val bestCount get() = counts[best] ?: 0
         fun add(v: String?): Boolean {
             if (v == null || locked != null) return false
-            if (v == best) streak++ else { best = v; streak = 1 }
-            if (streak >= need) { locked = v; return true }
+            val n = (counts[v] ?: 0) + 1; counts[v] = n
+            if (n >= bestCount) best = v
+            if (n >= need) { locked = v; return true }
             return false
         }
-        fun reset() { locked = null; best = null; streak = 0 }
+        fun accept(): Boolean { if (locked != null || best == null) return false; locked = best; return true }
+        fun reset() { counts.clear(); locked = null; best = null }
     }
 
     private val ui = Handler(Looper.getMainLooper())
@@ -106,6 +110,8 @@ class ScanActivity : AppCompatActivity() {
     // --- per-receipt state
     private val addr = Votes(ADDRESS_STREAK); private val time = Votes(3); private val order = Votes(3); private val note = Votes()
     private val phone = Votes(); private val name = Votes()
+    /** "ASAP" or "HH:MM" (exact time requested), and payment kind */
+    private val req = Votes(2); private val pay = Votes(2)
     private var asapSeen = 0
     private var bag: PdokGeocoder.Address? = null
     private var bagState = ""            // "", "checking", "notfound", "offline"
@@ -146,6 +152,11 @@ class ScanActivity : AppCompatActivity() {
         headTv = row(15f).apply { typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#14335e")); gravity = Gravity.CENTER }
         addrTv = row(); timeTv = row(); orderTv = row(); noteTv = row(14f)
         listOf(headTv, addrTv, timeTv, orderTv, noteTv).forEach { list.addView(it) }
+        // "I can see it's right": tap a ⏳ line to accept what it currently shows
+        addrTv.setOnClickListener { if (bag == null && bagState != "checking" && addr.accept()) lookupBag() }
+        timeTv.setOnClickListener { if (time.accept()) render() }
+        orderTv.setOnClickListener { if (order.accept()) render() }
+        noteTv.setOnClickListener { if (note.locked == null && bestNote != null) { note.locked = bestNote; translateNote(); render() } }
         val resBtns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
         resBtns.addView(btn("↻ Reset", "#6b7280") { resetReceipt() })
         addBtn = btn("Add ✓", "#1e9e4a") { addCurrent() }
@@ -222,13 +233,14 @@ class ScanActivity : AppCompatActivity() {
         if (paused || r == null) return
         var changed = false
         if (r.hasAddress && bag == null && bagState != "checking") {
-            // stricter than the other fields: N identical readings in a row (frames without an
-            // address don't break the streak; a different reading restarts it)
+            // the full string (postcode|number|street) must be read identically ADDRESS_STREAK times
             if (addr.add("${r.postcode}|${r.houseNo}|${r.street ?: ""}")) lookupBag()
             changed = true
         }
         if (r.deliveryTime != null) { time.add(r.deliveryTime); changed = true }
         if (r.asap) asapSeen++
+        if (r.asap) req.add("ASAP") else if (r.requestedTime != null) req.add(r.requestedTime)
+        if (r.payment != null) { pay.add(r.payment); changed = true }
         if (r.orderNo != null) { order.add(r.orderNo); changed = true }
         if (r.phone != null) phone.add(r.phone)
         if (r.name != null) name.add(r.name)
@@ -311,7 +323,7 @@ class ScanActivity : AppCompatActivity() {
     private fun render() {
         val grey = "#8a8a8a"
         fun line(tv: TextView, ok: Boolean, label: String, value: String?, tentative: String?) {
-            tv.text = if (ok) "✓  $label:  $value" else "⏳  $label:  " + (tentative?.let { "$it ?" } ?: "reading…")
+            tv.text = if (ok) "✓  $label:  $value" else "⏳  $label:  " + (tentative?.let { "$it  · tap ✓" } ?: "reading…")
             tv.setTextColor(Color.parseColor(if (ok) "#1b5e20" else grey))
             tv.typeface = if (ok) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         }
@@ -322,12 +334,18 @@ class ScanActivity : AppCompatActivity() {
             "checking" -> "checking BAG…"
             "notfound" -> "not in BAG, rescanning"
             "offline" -> "no internet for BAG check"
-            else -> addr.best?.split("|")?.let { "${it[2]} ${it[1]}".trim() + "  (${addr.streak}/${addr.need})" }
+            else -> addr.best?.split("|")?.let { "${it[2]} ${it[1]}".trim() + "  (${addr.bestCount}/${addr.need})" }
         }
         line(addrTv, a != null, "Address", addrValue, addrTent)
-        val asap = asapSeen >= 2
-        line(timeTv, time.locked != null, "Deliver by", time.locked?.let { it + if (asap) " (ASAP)" else "" }, time.best?.let { "$it  (${time.streak}/${time.need})" })
-        line(orderTv, order.locked != null, "Order", order.locked?.let { "#$it" }, order.best?.let { "#$it  (${order.streak}/${order.need})" })
+        val kind = req.locked ?: req.best
+        val timeText = time.locked?.let { t -> when {
+            kind == "ASAP" -> "⚡ ASAP, by $t"
+            kind != null -> "⏰ exactly $kind (not earlier)"
+            else -> t
+        } }
+        line(timeTv, time.locked != null, "Time", timeText, time.best?.let { "$it  (${time.bestCount}/${time.need})" })
+        val payIcon = when (pay.locked ?: pay.best) { "online" -> "  ·  ✅ paid"; "cash" -> "  ·  💶 CASH"; "card" -> "  ·  💳 PIN"; else -> "" }
+        line(orderTv, order.locked != null, "Order", order.locked?.let { "#$it$payIcon" }, order.best?.let { "#$it  (${order.bestCount}/${order.need})$payIcon" })
         val n = note.locked
         noteTv.visibility = if (n != null || bestNote != null) View.VISIBLE else View.GONE
         noteTv.text = when {
@@ -365,6 +383,16 @@ class ScanActivity : AppCompatActivity() {
         val a = bag
         if (a != null && time.locked != null && order.locked != null) { commit(a, order.locked!!, time.locked!!); return }
         paused = true
+        val cand = addr.best
+        if (a == null && cand != null) {
+            // check the most-read address in BAG first, then open the form with it filled in
+            val (pc, no) = cand.split("|")
+            net.execute {
+                val found = runCatching { PdokGeocoder.byPostcode(pc, no) }.getOrNull()
+                ui.post { if (!isFinishing) { if (found != null) { bag = found; addr.locked = cand }; completeDialog() } }
+            }
+            return
+        }
         completeDialog()
     }
 
@@ -383,29 +411,42 @@ class ScanActivity : AppCompatActivity() {
             hint = "Deliver before (HH:MM)"; inputType = InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME
             setText(time.locked ?: time.best ?: "")
         }
-        box.addView(addrBtn); box.addView(orderEt); box.addView(timeEt)
+        val kind = req.locked ?: req.best
+        val earliestEt = EditText(this).apply {
+            hint = "Exact time: not before (HH:MM) — empty = ASAP"; inputType = InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME
+            setText(if (kind != null && kind != "ASAP") kind else "")
+        }
+        box.addView(addrBtn); box.addView(orderEt); box.addView(timeEt); box.addView(earliestEt)
         AlertDialog.Builder(this).setTitle("Complete this order").setView(box)
             .setPositiveButton("Add") { _, _ ->
                 val c = chosen
                 if (c == null) { Toast.makeText(this, "An address is needed", Toast.LENGTH_SHORT).show(); paused = false; return@setPositiveButton }
-                commit(c, orderEt.text.toString().trim(), timeEt.text.toString().trim())
+                commit(c, orderEt.text.toString().trim(), timeEt.text.toString().trim(), earliestEt.text.toString().trim())
             }
             .setNegativeButton("Back to scanning") { _, _ -> paused = false }
             .setOnCancelListener { paused = false }
             .show()
     }
 
-    private fun commit(a: PdokGeocoder.Address, orderNo: String, hm: String) {
+    /**
+     * [notBefore]: requested exact time ("" = ASAP). Exact-time orders get "not before" = that time
+     * and a deadline of that time + grace; ASAP orders just get the promised time as deadline.
+     */
+    private fun commit(a: PdokGeocoder.Address, orderNo: String, hm: String,
+                       notBefore: String = (req.locked ?: req.best)?.takeIf { it != "ASAP" } ?: "") {
         val n = note.locked ?: bestNote
-        val s = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, orderNo, deadlineFrom(hm),
+        val earliest = deadlineFrom(notBefore)
+        val deadline = if (earliest != null) maxOf(earliest, deadlineFrom(hm) ?: earliest) + Config.SCHEDULED_GRACE_MIN * 60_000L else deadlineFrom(hm)
+        val s = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, orderNo, deadline,
             street = a.street, houseNo = a.houseNo, phone = phone.locked ?: phone.best ?: "",
-            note = listOfNotNull(n, noteEn?.let { "🇬🇧 $it" }).joinToString("\n"), name = name.locked ?: name.best ?: "")
+            note = listOfNotNull(n, noteEn?.let { "🇬🇧 $it" }).joinToString("\n"), name = name.locked ?: name.best ?: "",
+            earliest = earliest, payment = pay.locked ?: pay.best ?: "")
         added.add(s)
         resetReceipt()
     }
 
     private fun resetReceipt() {
-        listOf(addr, time, order, note, phone, name).forEach { it.reset() }
+        listOf(addr, time, order, note, phone, name, req, pay).forEach { it.reset() }
         bag = null; bagState = ""; noteEn = null; bestNote = null; asapSeen = 0; allBuzzed = false
         paused = false
         render()
