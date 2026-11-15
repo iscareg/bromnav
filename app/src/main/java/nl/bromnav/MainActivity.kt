@@ -96,6 +96,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private lateinit var bigNumTv: TextView
     private lateinit var bigRightTv: TextView
     private lateinit var bigSubTv: TextView
+    private lateinit var bigNoteTv: TextView
     private lateinit var mainBtn: Button
     private lateinit var recenterBtn: Button
     private lateinit var undoBar: LinearLayout
@@ -150,6 +151,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
         buildUi(savedInstanceState, tiles)
         if (BuildConfig.DEBUG) DebugBridge.register(this)
+        NoteTranslator.ensureModel(wifiOnly = true)
         requestLocation()
         refreshAll()
         worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
@@ -276,7 +278,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
         bigRightTv = tv(64f, "#e8900c", true).apply { text = "▶" }
         bigRow.addView(bigLeftTv); bigRow.addView(bigNumTv); bigRow.addView(bigRightTv)
         bigSubTv = tv(16f, "#444444").apply { gravity = Gravity.CENTER }
-        bigBox.addView(bigRow); bigBox.addView(bigSubTv, LinearLayout.LayoutParams(-1, -2))
+        bigNoteTv = tv(11f, "#5b2a86").apply { gravity = Gravity.CENTER; maxLines = 4; setPadding(0, dp(3), 0, 0) }
+        bigBox.addView(bigRow); bigBox.addView(bigSubTv, LinearLayout.LayoutParams(-1, -2)); bigBox.addView(bigNoteTv, LinearLayout.LayoutParams(-1, -2))
         infoCard.addView(bigBox, LinearLayout.LayoutParams(-1, -2))
         undoBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; visibility = View.GONE
@@ -380,41 +383,9 @@ class MainActivity : AppCompatActivity(), LocationListener {
     // ------------------------------------------------------------------ search / stops
 
     private fun openSearch() {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(8), dp(16), 0) }
-        val et = EditText(this).apply { hint = "Street + number, or postcode + number"; isSingleLine = true; textSize = 18f }
-        val results = ArrayList<PdokGeocoder.Address>()
-        val la = ArrayAdapter(this, android.R.layout.simple_list_item_1, ArrayList<String>())
-        val lv = ListView(this).apply { adapter = la }
-        box.addView(et); box.addView(lv, LinearLayout.LayoutParams(-1, dp(320)))
-        val dlg = AlertDialog.Builder(this).setTitle("Add stop").setView(box).setNegativeButton("Close", null).create()
-        var seq = 0
-        et.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun afterTextChanged(s: Editable?) {
-                val q = s?.toString()?.trim() ?: ""; val my = ++seq
-                if (q.length < 3) return
-                ui.postDelayed({
-                    if (my != seq) return@postDelayed
-                    net.execute {
-                        val res = try { PdokGeocoder.search(q) } catch (e: Exception) { Log.w(TAG, "search", e); null }
-                        ui.post {
-                            if (my != seq) return@post
-                            if (res == null) { toast("Address search needs mobile data"); return@post }
-                            results.clear(); results.addAll(res)
-                            la.clear(); la.addAll(res.map { it.label.removeSuffix(" Groningen") }); la.notifyDataSetChanged()
-                        }
-                    }
-                }, 350)
-            }
-        })
-        lv.setOnItemClickListener { _, _, pos, _ ->
-            val a = results[pos]; dlg.dismiss()
+        AddressSearch.show(this) { a ->
             addStop(Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, street = a.street, houseNo = a.houseNo))
         }
-        dlg.show()
-        et.requestFocus()
-        dlg.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
     }
 
     private fun addStop(s: Stop, ask: Boolean = true) {
@@ -424,25 +395,45 @@ class MainActivity : AppCompatActivity(), LocationListener {
         if (ask) editStop(s)
     }
 
+    /** Edit everything of an order that is already in the run (address, order no, time, phone, name, message). */
     private fun editStop(s: Stop) {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
-        val orderEt = EditText(this).apply { hint = "Order number"; setText(s.orderNo); inputType = InputType.TYPE_CLASS_TEXT }
-        val timeEt = EditText(this).apply {
-            hint = "Deliver before (HH:MM)"; inputType = InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME
-            s.deadline?.let { setText(hm(it)) }
+        var newAddr: PdokGeocoder.Address? = null
+        val addrBtn = Button(this).apply { isAllCaps = false; textSize = 15f; text = "📍 ${s.label}  (change)" }
+        addrBtn.setOnClickListener {
+            AddressSearch.show(this, "Change address", "${s.streetName()} ${s.number()}") { a -> newAddr = a; addrBtn.text = "📍 ${a.label.removeSuffix(" Groningen")}  (change)" }
         }
-        box.addView(orderEt); box.addView(timeEt)
-        val info = listOfNotNull(s.name.takeIf { it.isNotEmpty() }?.let { "🔔 $it" }, s.note.takeIf { it.isNotEmpty() }?.let { "📝 $it" }).joinToString("\n")
-        if (info.isNotEmpty()) box.addView(TextView(this).apply { text = info; textSize = 14f; setPadding(0, dp(8), 0, 0) })
+        fun field(hint: String, value: String, type: Int = InputType.TYPE_CLASS_TEXT) = EditText(this).apply { this.hint = hint; setText(value); inputType = type }
+        val orderEt = field("Order number", s.orderNo)
+        val timeEt = field("Deliver before (HH:MM)", s.deadline?.let { hm(it) } ?: "", InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME)
+        val phoneEt = field("Phone", s.phone, InputType.TYPE_CLASS_PHONE)
+        val nameEt = field("Name (doorbell)", s.name, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PERSON_NAME)
+        val noteEt = field("Message from customer", s.note, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE).apply { maxLines = 4; textSize = 14f }
+        listOf<View>(addrBtn, orderEt, timeEt, phoneEt, nameEt, noteEt).forEach { box.addView(it) }
         if (s.phone.isNotEmpty()) box.addView(Button(this).apply {
             text = "📞 Call ${s.phone}"; isAllCaps = false
             setOnClickListener { startActivity(Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:${s.phone}"))) }
         })
-        AlertDialog.Builder(this).setTitle(s.label).setView(box)
+        AlertDialog.Builder(this).setTitle(if (s.orderNo.isNotEmpty()) "Order #${s.orderNo}" else "Edit stop")
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
             .setPositiveButton("Save") { _, _ ->
+                val moved = newAddr?.let { a ->
+                    s.label = a.label.removeSuffix(" Groningen"); s.pos = a.pos; s.street = a.street; s.houseNo = a.houseNo; true
+                } ?: false
                 s.orderNo = orderEt.text.toString().trim()
                 s.deadline = parseHm(timeEt.text.toString())
+                s.phone = phoneEt.text.toString().trim(); s.name = nameEt.text.toString().trim()
+                val noteText = noteEt.text.toString().trim()
+                val noteChanged = noteText != s.note
+                s.note = noteText
                 store.save(); lastEtaCalc = 0; refreshAll()
+                if (moved) {
+                    worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+                    if (mode == Mode.NAV && s == legTarget) startLeg()
+                }
+                // a typed Dutch message gets an English line too
+                if (noteChanged && noteText.isNotEmpty() && !noteText.contains("🇬🇧"))
+                    NoteTranslator.translate(noteText) { en -> if (en != null) { s.note = "$noteText\n🇬🇧 $en"; store.save(); refreshAll() } }
             }
             .setNegativeButton("Delete") { _, _ -> store.stops.remove(s); store.save(); refreshAll() }
             .setNeutralButton("Cancel", null)
@@ -799,8 +790,9 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 (if (next.orderNo.isNotEmpty()) " · #${next.orderNo}" else "") +
                 (side?.let { " · on the $it" } ?: "") +
                 (if (next.name.isNotEmpty()) "\n🔔 ${next.name}" else "") +
-                (if (next.note.isNotEmpty()) "\n📝 ${next.note}" else "") +
-                (if (next.phone.isNotEmpty()) "\n📞 tap here to call" else "")
+                (if (next.phone.isNotEmpty()) "  📞 tap to call" else "")
+            bigNoteTv.visibility = if (next.note.isNotEmpty()) View.VISIBLE else View.GONE
+            bigNoteTv.text = "📝 " + next.note
             return
         }
         normalBox.visibility = View.VISIBLE; bigBox.visibility = View.GONE
@@ -969,7 +961,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                     o.put("parsed", true).put("postcode", r.postcode).put("houseNo", r.houseNo).put("street", r.street)
                         .put("city", r.city).put("name", r.name != null).put("phone", r.phone != null)
                         .put("orderNo", r.orderNo).put("deliveryTime", r.deliveryTime).put("asap", r.asap).put("note", r.note)
-                    val a = runCatching { PdokGeocoder.byPostcode(r.postcode, r.houseNo) }.getOrNull()
+                    val a = runCatching { PdokGeocoder.byPostcode(r.postcode!!, r.houseNo!!) }.getOrNull()
                     o.put("bag", a?.label)
                     if (add && a != null) ui.post {
                         val st = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, r.orderNo ?: "",
@@ -1037,7 +1029,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         o.put("screen", org.json.JSONObject()
             .put("banner", if (banner.visibility == View.VISIBLE) "${arrowTv.text} ${instrTv.text} | ${subTv.text}" else null)
             .put("card", if (bigBox.visibility == View.VISIBLE)
-                "BIG ${if (bigLeftTv.visibility == View.VISIBLE) "◀ " else ""}${bigNumTv.text}${if (bigRightTv.visibility == View.VISIBLE) " ▶" else ""} | ${bigSubTv.text}"
+                "BIG ${if (bigLeftTv.visibility == View.VISIBLE) "◀ " else ""}${bigNumTv.text}${if (bigRightTv.visibility == View.VISIBLE) " ▶" else ""} | ${bigSubTv.text} | small: ${bigNoteTv.text}"
                 else "${streetTv.text} ${numberTv.text} | ${detailTv.text}")
             .put("vars", "${speedTv.text} ${factorTv.text} ${starsTv.text}")
             .put("mainButton", mainBtn.text))

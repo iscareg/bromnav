@@ -13,6 +13,7 @@ args=(--es cmd "$cmd")
 if [ "$cmd" = move ]; then args+=(--es from "$1" --es to "$2"); fi
 if [ "$cmd" = cancel ] || [ "$cmd" = restore ]; then args+=(--es n "$1"); fi
 if [ "$cmd" = ocr ]; then args+=(--es path "$1"); [ "$2" = add ] && args+=(--es add 1); fi
+if [ "$cmd" = translate ]; then args+=(--es text "'$1'"); fi
 if [ "$cmd" = add ]; then
   args+=(--es q "'$1'"); [ -n "$2" ] && args+=(--es order "$2"); [ -n "$3" ] && args+=(--es due "$3")
 fi

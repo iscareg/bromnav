@@ -39,6 +39,7 @@ dependencies {
     implementation("androidx.recyclerview:recyclerview:1.4.0")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("com.google.mlkit:text-recognition:16.0.1")   // bundled Latin model, offline
+    implementation("com.google.mlkit:translate:17.0.3")          // NL->EN, model downloaded once (~30 MB), then offline
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("androidx.camera:camera-view:1.4.2")

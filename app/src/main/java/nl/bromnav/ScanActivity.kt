@@ -2,6 +2,7 @@ package nl.bromnav
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -12,14 +13,17 @@ import android.os.Handler
 import android.os.Looper
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.text.InputType
 import android.util.Size
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.widget.Button
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -37,17 +41,49 @@ import java.util.Calendar
 import java.util.concurrent.Executors
 
 /**
- * Live receipt scanner: point the camera at the receipt, it reads continuously (on-device OCR),
- * and when the same address is read twice it stops, confirms it with BAG (PDOK) and shows the result.
- * "Add" keeps the camera open for the next receipt; "Done" returns all scanned stops to the map.
- * All controls are centred (bike-holder corners stay free).
+ * Live receipt reader. Every camera frame is OCR'd; each field is collected independently and only
+ * gets a ✓ once the same value was read in two frames (the address must also exist in BAG).
+ * The checklist shows live what is already reliable: address, delivery time, order number and the
+ * customer's message (with an on-device Dutch→English translation).
+ * "Add" works at any moment: missing fields can be filled in by hand.
  */
 class ScanActivity : AppCompatActivity() {
+
+    /** Draws the OCR line boxes of the latest frame over the camera preview. */
+    private class BoxOverlay(ctx: android.content.Context) : View(ctx) {
+        data class Box(val r: android.graphics.RectF, val color: Int)
+        @Volatile var boxes: List<Box> = emptyList()
+        init { setWillNotDraw(false) }
+        private val paint = android.graphics.Paint().apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 4f; isAntiAlias = true }
+        override fun onDraw(c: android.graphics.Canvas) {
+            for (b in boxes) { paint.color = b.color; c.drawRoundRect(b.r, 6f, 6f, paint) }
+        }
+    }
 
     companion object {
         const val EXTRA_STOPS = "stops"          // JSON array of Stop.toJson()
         const val EXTRA_TYPE_INSTEAD = "type"    // user wants to type an address instead
         const val EXTRA_EXISTING = "existing"    // keys ("postcode no") already in the run
+        private const val CONFIRMATIONS = 2
+        /** the address must be read this many times in a row, identically, before the BAG check */
+        private const val ADDRESS_STREAK = 3
+    }
+
+    /**
+     * A value is trusted once it was read [need] times in a row identically. Frames that do not
+     * show the field don't break the streak; a different reading restarts it.
+     */
+    private class Votes(val need: Int = CONFIRMATIONS) {
+        var locked: String? = null
+        var best: String? = null   // current candidate (shown greyed while not locked)
+        var streak = 0
+        fun add(v: String?): Boolean {
+            if (v == null || locked != null) return false
+            if (v == best) streak++ else { best = v; streak = 1 }
+            if (streak >= need) { locked = v; return true }
+            return false
+        }
+        fun reset() { locked = null; best = null; streak = 0 }
     }
 
     private val ui = Handler(Looper.getMainLooper())
@@ -55,19 +91,30 @@ class ScanActivity : AppCompatActivity() {
     private val net = Executors.newSingleThreadExecutor()
 
     private lateinit var preview: PreviewView
-    private lateinit var hintTv: TextView
-    private lateinit var resultCard: LinearLayout
-    private lateinit var resultTitle: TextView
-    private lateinit var resultSub: TextView
+    private lateinit var overlay: BoxOverlay
+    private var lastBoxesAt = 0L
+    private lateinit var headTv: TextView
+    private lateinit var addrTv: TextView
+    private lateinit var timeTv: TextView
+    private lateinit var orderTv: TextView
+    private lateinit var noteTv: TextView
     private lateinit var addBtn: Button
     private lateinit var countTv: TextView
     private var camera: Camera? = null
     private var torch = false
 
-    @Volatile private var paused = false
-    private var lastKey: String? = null
+    // --- per-receipt state
+    private val addr = Votes(ADDRESS_STREAK); private val time = Votes(3); private val order = Votes(3); private val note = Votes()
+    private val phone = Votes(); private val name = Votes()
+    private var asapSeen = 0
+    private var bag: PdokGeocoder.Address? = null
+    private var bagState = ""            // "", "checking", "notfound", "offline"
+    private var bestNote: String? = null
+    private var noteEn: String? = null
+    private var allBuzzed = false
     private var frame = 0
-    private var pending: Stop? = null
+    @Volatile private var paused = false
+
     private val added = ArrayList<Stop>()
     private val existing = HashSet<String>()
 
@@ -78,37 +125,37 @@ class ScanActivity : AppCompatActivity() {
         background = card(Color.parseColor(color), 26); setOnClickListener { onClick() }
         layoutParams = LinearLayout.LayoutParams(0, dp(52), 1f).apply { setMargins(dp(5), 0, dp(5), 0) }
     }
+    private fun row(size: Float = 16f) = TextView(this).apply { textSize = size; setTextColor(Color.parseColor("#222222")); setPadding(0, dp(3), 0, dp(3)) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         intent.getStringArrayExtra(EXTRA_EXISTING)?.let { existing.addAll(it) }
+        NoteTranslator.ensureModel(wifiOnly = true) { ui.post { render() } }
+
         val side = dp(34)
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        preview = PreviewView(this).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
+        // TextureView-based preview so the box overlay composes reliably on top
+        preview = PreviewView(this).apply { scaleType = PreviewView.ScaleType.FILL_CENTER; implementationMode = PreviewView.ImplementationMode.COMPATIBLE }
         root.addView(preview, FrameLayout.LayoutParams(-1, -1))
-
-        hintTv = TextView(this).apply {
-            text = "Point at the Klant / Customer block\n(address, postcode, phone)"; textSize = 16f; gravity = Gravity.CENTER
-            setTextColor(Color.WHITE); background = card(Color.parseColor("#B0000000")); setPadding(dp(14), dp(10), dp(14), dp(10))
-        }
-        root.addView(hintTv, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply { setMargins(side, dp(24), side, 0) })
+        overlay = BoxOverlay(this)
+        root.addView(overlay, FrameLayout.LayoutParams(-1, -1))
 
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-        resultCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; background = card(Color.WHITE); setPadding(dp(14), dp(12), dp(14), dp(12)); visibility = View.GONE
-        }
-        resultTitle = TextView(this).apply { textSize = 22f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#14335e")); gravity = Gravity.CENTER }
-        resultSub = TextView(this).apply { textSize = 14f; setTextColor(Color.parseColor("#333333")); gravity = Gravity.CENTER; setPadding(0, dp(4), 0, dp(10)) }
-        val resBtns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        resBtns.addView(btn("↻ Rescan", "#6b7280") { resume() })
-        addBtn = btn("Add ✓", "#1e9e4a") { addPending() }
+        // live checklist
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = card(Color.parseColor("#F2FFFFFF")); setPadding(dp(14), dp(10), dp(14), dp(10)) }
+        headTv = row(15f).apply { typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#14335e")); gravity = Gravity.CENTER }
+        addrTv = row(); timeTv = row(); orderTv = row(); noteTv = row(14f)
+        listOf(headTv, addrTv, timeTv, orderTv, noteTv).forEach { list.addView(it) }
+        val resBtns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(8), 0, 0) }
+        resBtns.addView(btn("↻ Reset", "#6b7280") { resetReceipt() })
+        addBtn = btn("Add ✓", "#1e9e4a") { addCurrent() }
         resBtns.addView(addBtn)
-        resultCard.addView(resultTitle); resultCard.addView(resultSub); resultCard.addView(resBtns)
-        bottom.addView(resultCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+        list.addView(resBtns)
+        bottom.addView(list, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
 
         countTv = TextView(this).apply {
             textSize = 14f; setTextColor(Color.WHITE); gravity = Gravity.CENTER; background = card(Color.parseColor("#B0000000"), 12)
-            setPadding(dp(10), dp(4), dp(10), dp(4)); text = "Scanning…"
+            setPadding(dp(10), dp(4), dp(10), dp(4)); visibility = View.GONE
         }
         bottom.addView(countTv, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(8) })
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -116,10 +163,11 @@ class ScanActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(dp(56), dp(52)).apply { setMargins(dp(5), 0, dp(5), 0) }
         })
         row.addView(btn("⌨ Type", "#374151") { finishWith(typeInstead = true) })
-        row.addView(btn("Done", "#1f6fe5") { finishWith(false) })
+        row.addView(btn("Done", "#1f6fe5") { done() })
         bottom.addView(row, LinearLayout.LayoutParams(-1, -2))
         root.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { setMargins(side, 0, side, dp(44)) })
         setContentView(root)
+        render()
 
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera()
         else requestPermissions(arrayOf(Manifest.permission.CAMERA), 2)
@@ -148,9 +196,18 @@ class ScanActivity : AppCompatActivity() {
                 val media = proxy.image
                 if (paused || media == null) { proxy.close(); return@setAnalyzer }
                 // cycle the 4 orientations over frames: receipts are held sideways / upside down
-                val rot = (proxy.imageInfo.rotationDegrees + intArrayOf(0, 180, 90, 270)[frame++ % 4]) % 360
-                ReceiptOcr.recognizer.process(InputImage.fromMediaImage(media, rot))
-                    .addOnSuccessListener { t -> onText(ReceiptParser.parse(ReceiptOcr.toLines(t))) }
+                val base = proxy.imageInfo.rotationDegrees
+                val extra = intArrayOf(0, 180, 90, 270)[frame++ % 4]
+                // upright image size (as shown on screen)
+                val w = if (base % 180 == 0) proxy.width else proxy.height
+                val h = if (base % 180 == 0) proxy.height else proxy.width
+                ReceiptOcr.recognizer.process(InputImage.fromMediaImage(media, (base + extra) % 360))
+                    .addOnSuccessListener { t ->
+                        val lines = ReceiptOcr.toLines(t)
+                        val f = ReceiptParser.parseFields(lines)
+                        drawBoxes(lines, f, extra, w, h)
+                        onFields(f)
+                    }
                     .addOnCompleteListener { proxy.close() }
             }
             provider.unbindAll()
@@ -158,66 +215,219 @@ class ScanActivity : AppCompatActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
-    /** Called per analysed frame (main thread). Two identical reads in a row = confident. */
-    private fun onText(r: ReceiptParser.Receipt?) {
-        if (paused) return
-        if (r == null) { lastKey = null; return }
-        if (r.key != lastKey) { lastKey = r.key; hintTv.text = "Reading… ${r.street ?: ""} ${r.houseNo}"; return }
-        paused = true
-        (getSystemService(VIBRATOR_SERVICE) as? Vibrator)?.vibrate(VibrationEffect.createOneShot(80, VibrationEffect.DEFAULT_AMPLITUDE))
-        confirm(r)
+    // ------------------------------------------------------------------ collecting
+
+    /** Main thread, once per analysed frame. */
+    private fun onFields(r: ReceiptParser.Receipt?) {
+        if (paused || r == null) return
+        var changed = false
+        if (r.hasAddress && bag == null && bagState != "checking") {
+            // stricter than the other fields: N identical readings in a row (frames without an
+            // address don't break the streak; a different reading restarts it)
+            if (addr.add("${r.postcode}|${r.houseNo}|${r.street ?: ""}")) lookupBag()
+            changed = true
+        }
+        if (r.deliveryTime != null) { time.add(r.deliveryTime); changed = true }
+        if (r.asap) asapSeen++
+        if (r.orderNo != null) { order.add(r.orderNo); changed = true }
+        if (r.phone != null) phone.add(r.phone)
+        if (r.name != null) name.add(r.name)
+        if (r.note != null && note.locked == null) {
+            // OCR of long text varies a little between frames: vote on a normalised form, keep the longest reading
+            if (bestNote == null || r.note.length > bestNote!!.length) bestNote = r.note
+            if (note.add(r.note.lowercase().replace(Regex("""[^a-z0-9]"""), ""))) { note.locked = bestNote; translateNote() }
+            changed = true
+        }
+        if (changed) render()
     }
 
-    private fun confirm(r: ReceiptParser.Receipt) {
-        resultCard.visibility = View.VISIBLE
-        resultTitle.text = "${r.street ?: "?"} ${r.houseNo}"
-        resultSub.text = "Checking address…"
-        addBtn.isEnabled = false
+    /**
+     * Maps line boxes from the orientation the frame was read in ([extra] degrees clockwise on top
+     * of upright) back to upright image coordinates, then onto the FILL_CENTER preview.
+     */
+    private fun drawBoxes(lines: List<ReceiptParser.Line>, f: ReceiptParser.Receipt?, extra: Int, w: Int, h: Int) {
+        val now = System.currentTimeMillis()
+        if (lines.isEmpty() || (f != null && !ReceiptParser.isHorizontal(lines)) || f == null) {
+            // keep the last good boxes a moment (3 of 4 frames are read in the wrong orientation)
+            if (now - lastBoxesAt > 1200 && overlay.boxes.isNotEmpty()) { overlay.boxes = emptyList(); overlay.invalidate() }
+            return
+        }
+        fun up(x: Float, y: Float): Pair<Float, Float> = when (extra) {
+            90 -> y to (h - x)
+            180 -> (w - x) to (h - y)
+            270 -> (w - y) to x
+            else -> x to y
+        }
+        val vw = overlay.width.toFloat(); val vh = overlay.height.toFloat()
+        if (vw == 0f) return
+        val sc = maxOf(vw / w, vh / h)
+        val ox = (vw - w * sc) / 2; val oy = (vh - h * sc) / 2
+        fun color(t: String): Int {
+            val n = t.replace(" ", "").uppercase()
+            return when {
+                f.postcode != null && n.contains(f.postcode) -> Color.parseColor("#00E676")
+                f.street != null && n.contains(f.street.replace(" ", "").uppercase()) -> Color.parseColor("#00E676")
+                f.deliveryTime != null && t.contains(f.deliveryTime) -> Color.parseColor("#FFA000")
+                f.orderNo != null && n.replace("-", "").contains(f.orderNo.replace("-", "")) -> Color.parseColor("#E040FB")
+                f.note != null && t.length > 3 && f.note.contains(t.trim()) -> Color.parseColor("#FF4081")
+                else -> Color.argb(170, 255, 255, 255)
+            }
+        }
+        overlay.boxes = lines.map { l ->
+            val (x1, y1) = up(l.left.toFloat(), l.top.toFloat()); val (x2, y2) = up(l.right.toFloat(), l.bottom.toFloat())
+            BoxOverlay.Box(android.graphics.RectF(minOf(x1, x2) * sc + ox, minOf(y1, y2) * sc + oy, maxOf(x1, x2) * sc + ox, maxOf(y1, y2) * sc + oy), color(l.text))
+        }
+        lastBoxesAt = now
+        overlay.invalidate()
+    }
+
+    private fun lookupBag() {
+        val (pc, no) = addr.locked!!.split("|")
+        bagState = "checking"; render()
         net.execute {
-            val a = runCatching { PdokGeocoder.byPostcode(r.postcode, r.houseNo) }
+            val res = runCatching { PdokGeocoder.byPostcode(pc, no) }
             ui.post {
                 if (isFinishing) return@post
-                val addr = a.getOrNull()
-                if (addr == null) {
-                    resultSub.text = if (a.isFailure) "No internet — can't look up ${r.postcode} ${r.houseNo}" else "${r.postcode} ${r.houseNo} not found in BAG. Rescan?"
-                    return@post
+                val a = res.getOrNull()
+                when {
+                    a != null -> { bag = a; bagState = "" }
+                    res.isFailure -> { bagState = "offline"; addr.reset() }
+                    else -> { bagState = "notfound"; addr.reset() }   // misread: keep scanning
                 }
-                val s = Stop(System.currentTimeMillis(), addr.label.removeSuffix(" Groningen"), addr.pos, r.orderNo ?: "", r.deliveryTime?.let { deadlineFrom(it) },
-                    street = addr.street, houseNo = addr.houseNo, phone = r.phone ?: "", note = r.note ?: "", name = r.name ?: "")
-                pending = s
-                val dup = s.key() in existing || added.any { it.key() == s.key() }
-                resultTitle.text = "${addr.street} ${addr.houseNo}"
-                resultSub.text = listOfNotNull(
-                    "✓ ${addr.label.substringAfter(", ").removeSuffix(" Groningen")} (BAG)",
-                    r.orderNo?.let { "#$it" },
-                    r.deliveryTime?.let { "deliver by $it" + if (r.asap) " (ASAP)" else "" } ?: "no delivery time read",
-                    r.note?.let { "📝 $it" },
-                    if (dup) "⚠ already in this run" else null,
-                ).joinToString("\n")
-                addBtn.isEnabled = true
+                render()
             }
         }
     }
 
-    private fun deadlineFrom(hm: String): Long {
-        val (h, m) = hm.split(":").map { it.toInt() }
+    private fun translateNote() {
+        val n = note.locked ?: return
+        NoteTranslator.translate(n) { en -> noteEn = en; render() }
+    }
+
+    private fun stopKey(a: PdokGeocoder.Address) = "${Regex("""\d{4}[A-Z]{2}""").find(a.label)?.value} ${a.houseNo.uppercase()}"
+
+    // ------------------------------------------------------------------ UI
+
+    private fun render() {
+        val grey = "#8a8a8a"
+        fun line(tv: TextView, ok: Boolean, label: String, value: String?, tentative: String?) {
+            tv.text = if (ok) "✓  $label:  $value" else "⏳  $label:  " + (tentative?.let { "$it ?" } ?: "reading…")
+            tv.setTextColor(Color.parseColor(if (ok) "#1b5e20" else grey))
+            tv.typeface = if (ok) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        }
+        val a = bag
+        val addrValue = a?.let { "${it.street} ${it.houseNo} · ${Regex("""\d{4}[A-Z]{2}""").find(it.label)?.value ?: ""}" +
+            if (stopKey(it) in existing || added.any { s -> s.key() == stopKey(it) }) "  ⚠ already in run" else "" }
+        val addrTent = when (bagState) {
+            "checking" -> "checking BAG…"
+            "notfound" -> "not in BAG, rescanning"
+            "offline" -> "no internet for BAG check"
+            else -> addr.best?.split("|")?.let { "${it[2]} ${it[1]}".trim() + "  (${addr.streak}/${addr.need})" }
+        }
+        line(addrTv, a != null, "Address", addrValue, addrTent)
+        val asap = asapSeen >= 2
+        line(timeTv, time.locked != null, "Deliver by", time.locked?.let { it + if (asap) " (ASAP)" else "" }, time.best?.let { "$it  (${time.streak}/${time.need})" })
+        line(orderTv, order.locked != null, "Order", order.locked?.let { "#$it" }, order.best?.let { "#$it  (${order.streak}/${order.need})" })
+        val n = note.locked
+        noteTv.visibility = if (n != null || bestNote != null) View.VISIBLE else View.GONE
+        noteTv.text = when {
+            n == null -> "⏳  Message: ${bestNote?.take(60)}…"
+            noteEn != null -> "📝  $n\n🇬🇧  $noteEn"
+            !NoteTranslator.isDutch(n) -> "📝  $n"
+            !NoteTranslator.ready -> "📝  $n\n🇬🇧  (translation after a one-time 30 MB download on Wi-Fi)"
+            else -> "📝  $n\n🇬🇧  translating…"
+        }
+        noteTv.setTextColor(Color.parseColor(if (n != null) "#4a148c" else grey))
+
+        val all = a != null && time.locked != null && order.locked != null
+        headTv.text = when {
+            all -> "All read ✓  — tap Add" + if (BuildConfig.DEBUG) " [${overlay.boxes.size}]" else ""
+            !hasData() -> "Point the camera at the receipt"
+            else -> "Keep the receipt in view…" + if (BuildConfig.DEBUG) " [${overlay.boxes.size} boxes]" else ""
+        }
+        if (all && !allBuzzed) {
+            allBuzzed = true
+            (getSystemService(VIBRATOR_SERVICE) as? Vibrator)?.vibrate(VibrationEffect.createOneShot(90, VibrationEffect.DEFAULT_AMPLITUDE))
+        }
+        addBtn.text = if (all) "Add ✓" else "Add with this…"
+        if (added.isNotEmpty()) {
+            countTv.visibility = View.VISIBLE
+            countTv.text = "${added.size} receipt${if (added.size == 1) "" else "s"} added · scan the next or tap Done"
+        }
+    }
+
+    private fun hasData() = bag != null || addr.best != null || time.best != null || order.best != null || bestNote != null
+
+    // ------------------------------------------------------------------ add / finish
+
+    /** Adds the current receipt; if something is missing, opens a form prefilled with what was read. */
+    private fun addCurrent() {
+        val a = bag
+        if (a != null && time.locked != null && order.locked != null) { commit(a, order.locked!!, time.locked!!); return }
+        paused = true
+        completeDialog()
+    }
+
+    private fun completeDialog() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
+        var chosen: PdokGeocoder.Address? = bag
+        val addrBtn = Button(this).apply { isAllCaps = false; textSize = 16f }
+        fun showAddr() { addrBtn.text = chosen?.let { "📍 ${it.label.removeSuffix(" Groningen")}  (change)" } ?: "📍 Choose address…" }
+        showAddr()
+        addrBtn.setOnClickListener {
+            val guess = addr.best?.split("|")?.let { "${it[2]} ${it[1]}".trim() } ?: ""
+            AddressSearch.show(this, "Address", guess) { chosen = it; showAddr() }
+        }
+        val orderEt = EditText(this).apply { hint = "Order number"; setText(order.locked ?: order.best ?: ""); inputType = InputType.TYPE_CLASS_TEXT }
+        val timeEt = EditText(this).apply {
+            hint = "Deliver before (HH:MM)"; inputType = InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME
+            setText(time.locked ?: time.best ?: "")
+        }
+        box.addView(addrBtn); box.addView(orderEt); box.addView(timeEt)
+        AlertDialog.Builder(this).setTitle("Complete this order").setView(box)
+            .setPositiveButton("Add") { _, _ ->
+                val c = chosen
+                if (c == null) { Toast.makeText(this, "An address is needed", Toast.LENGTH_SHORT).show(); paused = false; return@setPositiveButton }
+                commit(c, orderEt.text.toString().trim(), timeEt.text.toString().trim())
+            }
+            .setNegativeButton("Back to scanning") { _, _ -> paused = false }
+            .setOnCancelListener { paused = false }
+            .show()
+    }
+
+    private fun commit(a: PdokGeocoder.Address, orderNo: String, hm: String) {
+        val n = note.locked ?: bestNote
+        val s = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, orderNo, deadlineFrom(hm),
+            street = a.street, houseNo = a.houseNo, phone = phone.locked ?: phone.best ?: "",
+            note = listOfNotNull(n, noteEn?.let { "🇬🇧 $it" }).joinToString("\n"), name = name.locked ?: name.best ?: "")
+        added.add(s)
+        resetReceipt()
+    }
+
+    private fun resetReceipt() {
+        listOf(addr, time, order, note, phone, name).forEach { it.reset() }
+        bag = null; bagState = ""; noteEn = null; bestNote = null; asapSeen = 0; allBuzzed = false
+        paused = false
+        render()
+    }
+
+    private fun deadlineFrom(hm: String): Long? {
+        val m = Regex("""^\s*(\d{1,2})[:.]?(\d{2})\s*$""").find(hm) ?: return null
         val c = Calendar.getInstance()
-        c.set(Calendar.HOUR_OF_DAY, h); c.set(Calendar.MINUTE, m); c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
+        c.set(Calendar.HOUR_OF_DAY, m.groupValues[1].toInt().coerceIn(0, 23)); c.set(Calendar.MINUTE, m.groupValues[2].toInt().coerceIn(0, 59))
+        c.set(Calendar.SECOND, 0); c.set(Calendar.MILLISECOND, 0)
         if (c.timeInMillis < System.currentTimeMillis() - 6 * 3600_000L) c.add(Calendar.DAY_OF_MONTH, 1)
         return c.timeInMillis
     }
 
-    private fun addPending() {
-        pending?.let { added.add(it) }
-        pending = null
-        countTv.text = "${added.size} receipt${if (added.size == 1) "" else "s"} added · scan the next one or tap Done"
-        resume()
-    }
-
-    private fun resume() {
-        resultCard.visibility = View.GONE; pending = null; lastKey = null
-        hintTv.text = "Point at the Klant / Customer block\n(address, postcode, phone)"
-        paused = false
+    private fun done() {
+        if (!hasData()) { finishWith(false); return }
+        paused = true
+        AlertDialog.Builder(this).setMessage("Add the receipt you are scanning now?")
+            .setPositiveButton("Add it") { _, _ -> addCurrent() }
+            .setNegativeButton("Discard") { _, _ -> finishWith(false) }
+            .setOnCancelListener { paused = false }
+            .show()
     }
 
     private fun finishWith(typeInstead: Boolean) {

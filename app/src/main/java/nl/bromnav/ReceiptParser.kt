@@ -26,8 +26,8 @@ object ReceiptParser {
     }
 
     data class Receipt(
-        val postcode: String,          // "1234AB"
-        val houseNo: String,           // "17", "32A", "13-2"
+        val postcode: String?,         // "1234AB"
+        val houseNo: String?,          // "17", "32A", "13-2"
         val street: String?,           // as read by OCR (PDOK gives the official one)
         val city: String?,
         val name: String?,
@@ -37,7 +37,8 @@ object ReceiptParser {
         val asap: Boolean,             // requested "ZSM"/"ASAP"
         val note: String?,             // courier note ("Voor bezorger: ...")
     ) {
-        /** key used to decide that two scans read the same receipt */
+        val hasAddress get() = postcode != null && houseNo != null
+        /** key used to decide that two scans read the same address */
         val key get() = "$postcode $houseNo"
     }
 
@@ -71,66 +72,74 @@ object ReceiptParser {
         return rows.flatMap { r -> r.sortedBy { it.left } }
     }
 
-    fun parse(lines: List<Line>): Receipt? {
+    /** Full receipt only when the address was read in this frame. */
+    fun parse(lines: List<Line>): Receipt? = parseFields(lines)?.takeIf { it.hasAddress }
+
+    /** Whatever fields this frame shows (address, time, order nr can come from different frames). */
+    fun parseFields(lines: List<Line>): Receipt? {
         if (!isHorizontal(lines)) return null
         val ls = readingOrder(lines.map { it.copy(text = it.text.replace('\u00A0', ' ').trim()) }.filter { it.text.isNotEmpty() })
         if (ls.isEmpty()) return null
 
-        // --- postcode line (prefer one followed by a city name)
+        // --- address block (optional in a single frame: fields are collected over many frames)
+        var postcode: String? = null; var city: String? = null; var street: String? = null; var houseNo: String? = null
+        var name: String? = null; var phone: String? = null; var note: String? = null
         val pcIdx = ls.indices.filter { POSTCODE.matches(ls[it].text) }
-            .maxByOrNull { i -> val rest = POSTCODE.find(ls[i].text)!!.groupValues[3]; if (rest.isNotBlank()) 2 else 1 }
-            ?: return null
-        val pcM = POSTCODE.find(ls[pcIdx].text)!!
-        val postcode = pcM.groupValues[1] + pcM.groupValues[2].uppercase()
-        val city = pcM.groupValues[3].trim().takeIf { it.isNotEmpty() }?.replaceFirstChar { it.uppercase() }
+            .maxByOrNull { i -> val rest = POSTCODE.find(ls[i].text)!!.groupValues[3]; if (rest.isNotBlank()) 2 else 1 } ?: -1
+        if (pcIdx >= 0) {
+            val pcM = POSTCODE.find(ls[pcIdx].text)!!
+            postcode = pcM.groupValues[1] + pcM.groupValues[2].uppercase()
+            city = pcM.groupValues[3].trim().takeIf { it.isNotEmpty() }?.replaceFirstChar { it.uppercase() }
 
-        // --- street + number: nearest line before the postcode that looks like "Street 12a"
-        var stIdx = -1
-        val pcLine = ls[pcIdx]
-        fun aligned(l: Line) = pcLine.bottom == 0 || Math.abs(l.left - pcLine.left) < pcLine.h * 2.5
-        for (i in pcIdx - 1 downTo maxOf(0, pcIdx - 4)) {
-            val t = ls[i].text
-            if (STREET.matches(t) && !NOT_A_STREET.containsMatchIn(t) && aligned(ls[i])) { stIdx = i; break }
-        }
-        // OCR may join "Street 12" and postcode on one line: "Street 12 1234 AB Groningen"
-        var street: String? = null; var houseNo: String? = null
-        if (stIdx >= 0) {
-            val m = STREET.find(ls[stIdx].text)!!
-            street = m.groupValues[1].trim()
-            houseNo = m.groupValues[2] + (m.groupValues[3].ifEmpty { m.groupValues[4].let { if (it.isNotEmpty()) "-$it" else "" } }).uppercase()
-        } else {
-            val joined = Regex("""^(.*?[A-Za-zÀ-ÿ.])\s+(\d{1,5})\s*([A-Za-z]{0,2})\s+([1-9]\d{3})\s?([A-Za-z]{2})\b""").find(ls[pcIdx].text)
-            if (joined != null) { street = joined.groupValues[1].trim(); houseNo = joined.groupValues[2] + joined.groupValues[3].uppercase() }
-        }
-        if (houseNo == null) return null
+            // street + number: nearest left-aligned line before the postcode that looks like "Street 12a"
+            var stIdx = -1
+            val pcLine = ls[pcIdx]
+            fun aligned(l: Line) = pcLine.bottom == 0 || Math.abs(l.left - pcLine.left) < pcLine.h * 2.5
+            for (i in pcIdx - 1 downTo maxOf(0, pcIdx - 4)) {
+                val t = ls[i].text
+                if (STREET.matches(t) && !NOT_A_STREET.containsMatchIn(t) && aligned(ls[i])) { stIdx = i; break }
+            }
+            if (stIdx >= 0) {
+                val m = STREET.find(ls[stIdx].text)!!
+                street = m.groupValues[1].trim()
+                houseNo = m.groupValues[2] + (m.groupValues[3].ifEmpty { m.groupValues[4].let { if (it.isNotEmpty()) "-$it" else "" } }).uppercase()
+            } else {
+                // OCR may join "Street 12" and the postcode on one line
+                val joined = Regex("""^(.*?[A-Za-zÀ-ÿ.])\s+(\d{1,5})\s*([A-Za-z]{0,2})\s+([1-9]\d{3})\s?([A-Za-z]{2})\b""").find(ls[pcIdx].text)
+                if (joined != null) { street = joined.groupValues[1].trim(); houseNo = joined.groupValues[2] + joined.groupValues[3].uppercase() }
+            }
+            if (houseNo == null) postcode = null   // a postcode without a street line is not an address
 
-        // --- name: line just above the street that has no digits and is not a header
-        val name = (if (stIdx > 0) ls[stIdx - 1].text else null)
-            ?.takeIf { it.none(Char::isDigit) && !HEADER.matches(it) && it.length in 2..40 }
+            // name: line just above the street that has no digits and is not a header
+            name = (if (stIdx > 0) ls[stIdx - 1].text else null)
+                ?.takeIf { it.none(Char::isDigit) && !HEADER.matches(it) && it.length in 2..40 }
 
-        // --- phone: first phone-looking line after the postcode
-        var phoneIdx = -1; var phone: String? = null
-        for (i in pcIdx + 1..minOf(ls.size - 1, pcIdx + 3)) {
-            PHONE.find(ls[i].text)?.let { phone = it.value.replace(Regex("""[\s-]"""), ""); phoneIdx = i }
-            if (phone != null) break
-        }
+            // phone: first phone-looking line after the postcode
+            var phoneIdx = -1
+            for (i in pcIdx + 1..minOf(ls.size - 1, pcIdx + 3)) {
+                PHONE.find(ls[i].text)?.let { phone = it.value.replace(Regex("""[\s-]"""), ""); phoneIdx = i }
+                if (phone != null) break
+            }
 
-        // --- courier note: lines after phone (or postcode) until the next section header
-        val noteStart = if (phoneIdx >= 0) phoneIdx + 1 else pcIdx + 1
-        val noteLines = ArrayList<String>()
-        val rowRef = if (phoneIdx >= 0) ls[phoneIdx] else pcLine
-        for (i in noteStart until ls.size) {
-            val t = ls[i].text
-            // something to the right on the phone's own row (e.g. a section header) is not a note
-            if (rowRef.bottom != 0 && Math.abs(ls[i].cy - rowRef.cy) < rowRef.h * 0.5) continue
-            if (HEADER.matches(t) || Regex("""^\s*(\d+\s*[x×]\s|orde?r?\b|bestel)""", RegexOption.IGNORE_CASE).containsMatchIn(t) ||
-                t.contains('€') || Regex("""\b(tas|stuks|st\))\b""", RegexOption.IGNORE_CASE).containsMatchIn(t)) break
-            if (t.length < 3 || t.count(Char::isLetter) < t.length / 2) continue   // QR-code noise
-            noteLines.add(t)
-            if (noteLines.size >= 6) break
+            // courier note: lines after phone (or postcode) until the next section header
+            val noteStart = if (phoneIdx >= 0) phoneIdx + 1 else pcIdx + 1
+            val noteLines = ArrayList<String>()
+            val rowRef = if (phoneIdx >= 0) ls[phoneIdx] else pcLine
+            for (i in noteStart until ls.size) {
+                val t = ls[i].text
+                // something to the right on the phone's own row (e.g. a section header) is not a note
+                if (rowRef.bottom != 0 && Math.abs(ls[i].cy - rowRef.cy) < rowRef.h * 0.5) continue
+                // the note box starts at the address block's left edge; text further left is not on the receipt
+                if (pcLine.bottom != 0 && ls[i].left < pcLine.left - pcLine.h * 1.5) continue
+                if (HEADER.matches(t) || Regex("""^\s*(\d+\s*[x×]\s|orde?r?\b|bestel)""", RegexOption.IGNORE_CASE).containsMatchIn(t) ||
+                    t.contains('€') || Regex("""\b(tas|stuks|st\))\b""", RegexOption.IGNORE_CASE).containsMatchIn(t)) break
+                if (t.length < 3 || t.count(Char::isLetter) < t.length / 2) continue   // QR-code noise
+                noteLines.add(t)
+                if (noteLines.size >= 6) break
+            }
+            // a real courier note is a sentence, not OCR fragments
+            note = noteLines.joinToString(" ").takeIf { n -> n.length >= 15 && n.split(' ').count { it.length >= 2 } >= 3 }
         }
-        // a real courier note is a sentence, not OCR fragments
-        val note = noteLines.joinToString(" ").takeIf { n -> n.length >= 15 && n.split(' ').count { it.length >= 2 } >= 3 }
 
         // --- delivery time: label + value (same line, or a line to the right / just below)
         var time: String? = null
