@@ -14,6 +14,11 @@ class AddressBook private constructor(private val groups: List<Group>) {
 
     class Group(val postcode: String, val street: String, val city: String, private val raw: String) {
         val streetNorm = PoiIndex.norm(street)
+        /** position of the first address (cheap, without parsing all numbers) */
+        val firstPos: LatLon? by lazy {
+            val p = raw.substringBefore(';').split(':')
+            if (p.size == 3) p[1].toIntOrNull()?.let { la -> p[2].toIntOrNull()?.let { lo -> LatLon(la / 1e5, lo / 1e5) } } else null
+        }
         /** house numbers parsed on first use (most groups are never looked at) */
         val numbers: List<Pair<String, LatLon>> by lazy {
             raw.split(';').mapNotNull { e ->
@@ -31,6 +36,17 @@ class AddressBook private constructor(private val groups: List<Group>) {
     private val byPostcode = groups.groupBy { it.postcode }
     val size get() = groups.sumOf { it.numbers.size }
     val groupCount get() = groups.size
+
+    /** "Proefstraat 9a": the address closest to [p] (within ~300 m), or null */
+    fun nearest(p: LatLon): String? {
+        var best: String? = null; var bestD = 300.0
+        for (g in groups) {
+            val f = g.firstPos ?: continue
+            if (Math.abs(f.lat - p.lat) > 0.012 || Math.abs(f.lon - p.lon) > 0.02) continue   // streets are < ~1.3 km
+            for ((n, pos) in g.numbers) { val d = Geo.dist(p, pos); if (d < bestD) { bestD = d; best = "${g.street} ${n.lowercase()}" } }
+        }
+        return best
+    }
 
     fun hasPostcode(pc: String) = byPostcode.containsKey(pc.uppercase())
 

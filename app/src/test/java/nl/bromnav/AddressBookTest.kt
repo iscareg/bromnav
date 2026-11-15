@@ -41,6 +41,11 @@ class AddressBookTest {
         assertTrue(book.search("xq", here).isEmpty())
     }
 
+    @Test fun nearestAddress() {
+        assertEquals("Proefstraat 9a", book.nearest(LatLon(53.20857, 6.57170)))
+        assertNull(book.nearest(LatLon(52.0, 5.0)))
+    }
+
     @Test fun streetComparison() {
         assertTrue(AddressBook.streetMatches("schildersslraat", "Schildersstraat"))
         assertTrue(AddressBook.streetMatches("Voorbeeldlaan", "Ter Voorbeeldlaan"))

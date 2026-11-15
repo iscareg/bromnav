@@ -583,6 +583,15 @@ class MainActivity : AppCompatActivity(), LocationListener {
             "mode_simple" -> setAppMode(true)
             "mode_delivery" -> setAppMode(false)
             "simulate" -> if (simulating) stopSimulation() else simulate()
+            "goto" -> res.data?.getStringExtra(RoadCorrectionsActivity.EXTRA_GOTO)?.split(',')?.let { k ->
+                val e = RoadOverrides.get(k[0].toLong(), k[1].toLong()) ?: return@let
+                val mid = e.geom[e.geom.size / 2]
+                follow = false
+                map?.moveCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(LatLng(mid.lat, mid.lon)).zoom(17.5).bearing(0.0).tilt(0.0).build()))
+                setLegal(true, true)
+                setGeoJson("selroad", RoadLayer.geoJson(listOf(RoadLayer.Link(e.a, e.b, e.geom, 0, e.tags))) { 0 })
+                toast("Your correction is highlighted. Tap the road to change or remove it; ◎ returns to your position.")
+            }
         }
     }
 
@@ -1311,7 +1320,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 detailTv.text = "All delivered — heading back" + (pr?.let { " · ${Navigator.fmtDist(it.remainingM)}" } ?: "")
             }
             next == null && simple -> { streetTv.text = "Simple nav"; numberTv.text = "🧭"; detailTv.text = "Tap 🔍 to search a place or address (or long-press the map)" }
-            next == null -> { streetTv.text = "No stops yet"; numberTv.text = ""; detailTv.text = "Tap 📷 to scan receipts (or ☰ → type an address)" }
+            next == null -> { streetTv.text = "No stops yet"; numberTv.text = ""; detailTv.text = "Tap 📷 to scan receipts (⌨ Type in there for a typed address)" }
             else -> {
                 streetTv.text = next.streetName(); numberTv.text = next.number()
                 val parts = ArrayList<String>()     // line 1: where / when

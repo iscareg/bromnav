@@ -43,6 +43,12 @@ class SettingsActivity : AppCompatActivity() {
         build()
     }
 
+    private val corrections = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { res ->
+        val key = res.data?.getStringExtra(RoadCorrectionsActivity.EXTRA_GOTO)
+        if (key != null) { setResult(RESULT_OK, Intent().putExtra(EXTRA_ACTION, "goto").putExtra(RoadCorrectionsActivity.EXTRA_GOTO, key)); finish() }
+        else build()                     // corrections may have been deleted
+    }
+
     private fun finishWith(action: String) { setResult(RESULT_OK, Intent().putExtra(EXTRA_ACTION, action)); finish() }
 
     private fun build() {
@@ -61,8 +67,8 @@ class SettingsActivity : AppCompatActivity() {
         section("Roads & map")
         row("✏", "Edit road access", "Tap a road on the map to allow or forbid it") { finishWith("edit_roads") }
         val n = RoadOverrides.all().size
-        row("🛣", "My road corrections", if (n == 0) "none" else "$n section${if (n == 1) "" else "s"} · tap to remove all") {
-            if (n > 0) confirm("Remove all $n road corrections (allowed / forbidden sections)?") { RoadOverrides.clear(); finishWith("roads_changed") }
+        row("🛣", "My road corrections", if (n == 0) "none" else "$n section${if (n == 1) "" else "s"} · list, show on map, delete") {
+            corrections.launch(Intent(this, RoadCorrectionsActivity::class.java))
         }
         row("⛔", "Avoid marks", if (avoid == 0) "none (long-press the map to add one)" else "$avoid · tap to remove all") {
             if (avoid > 0) confirm("Remove all $avoid avoid marks?") { finishWith("clear_avoid") }
