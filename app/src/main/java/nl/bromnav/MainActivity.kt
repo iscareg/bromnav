@@ -164,6 +164,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         Pal.init(this)
         Vehicle.load(this)
+        OrderMode.load(this)
         RoadOverrides.init(filesDir)
         MapLibre.getInstance(this)
         store = RunStore(this)
@@ -551,6 +552,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             pm.menu.add(0, 5, 0, "End navigation")
         } else pm.menu.add(0, 6, 0, "Clear all stops")
         pm.menu.add(0, 7, 0, "Remove all avoid marks")
+        pm.menu.add(0, 31, 0, "🔀 Auto order: ${OrderMode.current.label}")
         addRoadItems(pm)
         pm.menu.add(0, 10, 0, "🧭 Switch to simple nav")
         pm.menu.add(0, 11, 0, "🌓 Theme: ${Pal.choice(this)} (tap to change)")
@@ -622,8 +624,23 @@ class MainActivity : AppCompatActivity(), LocationListener {
         if (n > 0) pm.menu.add(0, 23, 0, "Remove all my road corrections ($n)")
     }
 
+    private fun chooseOrderMode() {
+        val ms = OrderMode.entries
+        val help = mapOf(OrderMode.SHORTEST to "least riding in total; times only break ties",
+            OrderMode.HOTTEST to "least time left first, distance still counts",
+            OrderMode.ON_TIME to "as few late orders as possible, with a safety margin")
+        AlertDialog.Builder(this).setTitle("Auto order priority")
+            .setSingleChoiceItems(ms.map { "${it.label}\n   ${help[it]}" }.toTypedArray(), ms.indexOf(OrderMode.current)) { d, w ->
+                d.dismiss()
+                if (ms[w] == OrderMode.current) return@setSingleChoiceItems
+                OrderMode.set(this, ms[w]); toast("Auto order: ${ms[w].label}")
+                if (!store.manualOrder && store.pending().size >= 2) autoOrder()
+            }.show()
+    }
+
     private fun onRoadItem(id: Int) {
         when (id) {
+            31 -> chooseOrderMode()
             20 -> chooseVehicle()
             21 -> setLegal(!showLegal, false)
             22 -> if (editRoads) setLegal(showLegal, false) else setLegal(true, true)

@@ -93,4 +93,42 @@ class TspSolverTest {
         assertEquals(100.0, r.lateS, 1e-9)
         assertEquals(600.0 + 60 + 600, r.totalS, 1e-9)
     }
+
+    /** three stops on a line 0 -> 1 -> 2 -> 3; stop 3 is due soon, stop 1 has lots of time */
+    private val line = arrayOf(
+        doubleArrayOf(0.0, 100.0, 200.0, 300.0, 0.0),
+        doubleArrayOf(100.0, 0.0, 100.0, 200.0, 100.0),
+        doubleArrayOf(200.0, 100.0, 0.0, 100.0, 200.0),
+        doubleArrayOf(300.0, 200.0, 100.0, 0.0, 300.0),
+        doubleArrayOf(0.0, 100.0, 200.0, 300.0, 0.0))
+    private val due = mapOf<Int, Double?>(1 to 3000.0, 2 to 3000.0, 3 to 900.0)
+
+    @Test fun shortestModeRidesTheLine() =
+        assertEquals(listOf(1, 2, 3), TspSolver.solve(line, listOf(1, 2, 3), 4, due, 60.0, mode = OrderMode.SHORTEST).order)
+
+    @Test fun hottestModeGoesToTheUrgentOrderFirst() =
+        assertEquals(3, TspSolver.solve(line, listOf(1, 2, 3), 4, due, 60.0, mode = OrderMode.HOTTEST).order.first())
+
+    @Test fun onTimeModeOnlyReordersWhenItWouldBeLate() {
+        // stop 3 is reached at 460 s on the line: well before 900 s, so no reason to ride back and forth
+        assertEquals(listOf(1, 2, 3), TspSolver.solve(line, listOf(1, 2, 3), 4, due, 60.0, mode = OrderMode.ON_TIME).order)
+        // due at 300 s: on the line it would be late -> go there first
+        assertEquals(3, TspSolver.solve(line, listOf(1, 2, 3), 4, due + (3 to 300.0), 60.0, mode = OrderMode.ON_TIME).order.first())
+    }
+
+    @Test fun branchAndBoundOptimalInEveryMode() {
+        val rnd = Random(5)
+        for (m in OrderMode.entries) repeat(60) {
+            val k = 2 + rnd.nextInt(5); val t = matrix(k + 2, rnd); val stops = (1..k).toList()
+            val dl = stops.associateWith { if (rnd.nextBoolean()) 300.0 + rnd.nextDouble() * 3000 else null }
+            val r = TspSolver.solve(t, stops, k + 1, dl, 60.0, mode = m)
+            var best = Double.MAX_VALUE
+            fun perm(a: MutableList<Int>, i: Int) {
+                if (i == a.size) { best = minOf(best, TspSolver.cost(TspSolver.evaluate(t, a, k + 1, dl, 60.0, mode = m))); return }
+                for (j in i until a.size) { a[i] = a[j].also { a[j] = a[i] }; perm(a, i + 1); a[i] = a[j].also { a[j] = a[i] } }
+            }
+            perm(stops.toMutableList(), 0)
+            assertEquals("$m", best, TspSolver.cost(r), 1e-6)
+        }
+    }
 }

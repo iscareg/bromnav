@@ -52,6 +52,8 @@ Groningen area, so it works without a PC and without mobile data.
 - **ASAP orders** keep a safety margin before their promised time. **Exact-time orders**
   ("req.: 17:30") are never delivered early; arriving after the requested time is penalised, with
   a hard limit of +10 min.
+- **Auto order priority** (☰ → 🔀): shortest total route / hottest orders first (least time left,
+  distance still counts) / on time versus the promised times (default).
 - Manual override (▲/▼, long-press = next), undo for *Delivered*, cancel/restore orders, and full
   editing of an order.
 - GTA-style 0–5 urgency stars and a personal speed multiplier learned from your own deliveries.
@@ -116,7 +118,7 @@ tags the version, and publishes a GitHub release (needs the `gh` CLI). The signi
 
 ## Testing tools
 
-- `./gradlew testDebugUnitTest`: 96 unit tests. Logic: solver vs brute force, navigator, route
+- `./gradlew testDebugUnitTest`: 100 unit tests. Logic: solver vs brute force, navigator, route
   parsing, time windows, speed model, receipts, GPS filter, place search, road corrections. Real
   data, when `data/` exists: routing legality for all three vehicles, unreachable destinations,
   road layer, planner. The remote PMTiles test runs with `BROMNAV_NET_TEST=1`.

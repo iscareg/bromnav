@@ -53,7 +53,7 @@ class Planner(private val engine: BRouterEngine, private val speed: SpeedModel) 
             deadlines[k + 1] = s.deadline?.let { (it - nowMs) / 1000.0 }
             earliest[k + 1] = s.earliest?.let { (it - nowMs) / 1000.0 }
         }
-        val r = TspSolver.solve(t, (1..stops.size).toList(), n - 1, deadlines, Config.SERVICE_S, earliest)
+        val r = TspSolver.solve(t, (1..stops.size).toList(), n - 1, deadlines, Config.SERVICE_S, earliest, OrderMode.current)
         return Plan(r.order.map { stops[it - 1] }, r.arrivals, r.totalS, r.lateS)
     }
 
