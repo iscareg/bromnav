@@ -33,6 +33,28 @@ object PdokGeocoder {
         } finally { c.disconnect() }
     }
 
+    /**
+     * Exact BAG lookup by postcode + house number ("17", "32A", "120-2"), as printed on receipts.
+     * Returns null if PDOK has no such address.
+     */
+    fun byPostcode(postcode: String, houseNo: String): Address? {
+        val num = Regex("""^\d+""").find(houseNo)?.value ?: return null
+        val q = "postcode:${postcode.uppercase()} AND huisnummer:$num"
+        val url = "$BASE?q=${URLEncoder.encode(q, "UTF-8")}&fq=type:adres&rows=20&fl=weergavenaam,centroide_ll,straatnaam,huis_nlt"
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 6000; c.readTimeout = 6000
+        c.setRequestProperty("User-Agent", "BromNav/0.1")
+        try {
+            val docs = JSONObject(c.inputStream.bufferedReader().readText()).getJSONObject("response").getJSONArray("docs")
+            val all = (0 until docs.length()).mapNotNull { i ->
+                val d = docs.getJSONObject(i)
+                parsePoint(d.optString("centroide_ll"))?.let { Address(d.getString("weergavenaam"), it, d.optString("straatnaam"), d.optString("huis_nlt")) }
+            }
+            fun norm(s: String) = s.uppercase().replace(Regex("""[\s\-]"""), "")
+            return all.firstOrNull { norm(it.houseNo) == norm(houseNo) } ?: all.firstOrNull { norm(it.houseNo) == num } ?: all.firstOrNull()
+        } finally { c.disconnect() }
+    }
+
     /** "POINT(6.57 53.21)" -> LatLon */
     fun parsePoint(s: String): LatLon? {
         val m = Regex("""POINT\(([-\d.]+) ([-\d.]+)\)""").find(s) ?: return null

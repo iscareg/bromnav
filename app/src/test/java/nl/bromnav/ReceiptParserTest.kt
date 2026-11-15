@@ -1,0 +1,94 @@
+package nl.bromnav
+
+import nl.bromnav.ReceiptParser.Line
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/** Synthetic receipts (made-up people/addresses) in the real layouts. */
+class ReceiptParserTest {
+
+    private fun lines(vararg t: String) = t.mapIndexed { i, s -> Line(s, 0, i * 40, 400, i * 40 + 30) }
+
+    @Test fun dutchReceipt() {
+        val r = ReceiptParser.parse(lines(
+            "Bestelnummer: ABCD12 - 015",
+            "Besteld op: za 14/11/2026 19:40",
+            "Nieuwe klant: Nee",
+            "Bron: Website",
+            "Bezorgtijd: 20:25 (gevr.: ZSM)",
+            "Betaalwijze: Online betaald",
+            "Klant",
+            "Jan Jansen",
+            "Voorbeeldstraat 13",
+            "9712 AB Groningen",
+            "0612345678",
+            "Voor bezorger: hard op deurbel 2 drukken,",
+            "hij werkt niet altijd.",
+            "Bestelling",
+            "1× Plastic Tas € 0,10",
+        ))!!
+        assertEquals("9712AB", r.postcode); assertEquals("13", r.houseNo); assertEquals("Voorbeeldstraat", r.street)
+        assertEquals("Groningen", r.city); assertEquals("Jan Jansen", r.name); assertEquals("0612345678", r.phone)
+        assertEquals("ABCD12-015", r.orderNo); assertEquals("20:25", r.deliveryTime); assertTrue(r.asap)
+        assertEquals("Voor bezorger: hard op deurbel 2 drukken, hij werkt niet altijd.", r.note)
+    }
+
+    @Test fun englishReceiptWithLetterAndSplitColumns() {
+        // labels and values recognised as separate lines on the same row
+        val ls = listOf(
+            Line("Order nr:", 0, 0, 120, 30), Line("WXYZ99 - 008", 200, 2, 380, 32),
+            Line("Ordered on:", 0, 40, 140, 70), Line("Fri 6/12/2026 4:05 PM", 200, 40, 400, 70),
+            Line("Source:", 0, 80, 100, 110), Line("Just Eat", 200, 80, 300, 110),
+            Line("Delivery time:", 0, 120, 160, 150), Line("17:30 (req.:17:30)", 200, 121, 400, 151),
+            Line("Payment:", 0, 160, 110, 190), Line("Online paid", 200, 160, 330, 190),
+            Line("Customer", 150, 200, 260, 230),
+            Line("Piet Voorbeeld", 0, 240, 200, 270),
+            Line("Teststraat 32A", 0, 280, 200, 310),
+            Line("9713 XY Groningen", 0, 320, 240, 350),
+            Line("+31612345678", 0, 360, 200, 390),
+            Line("Order", 150, 400, 230, 430),
+            Line("1× Plastic Tas", 0, 440, 200, 470),
+        )
+        val r = ReceiptParser.parse(ls)!!
+        assertEquals("9713XY", r.postcode); assertEquals("32A", r.houseNo); assertEquals("Teststraat", r.street)
+        assertEquals("WXYZ99-008", r.orderNo); assertEquals("17:30", r.deliveryTime); assertEquals(false, r.asap)
+        assertEquals("+31612345678", r.phone); assertNull(r.note)
+    }
+
+    @Test fun lowercasePostcodeAndNoHeaderAbove() {
+        val r = ReceiptParser.parse(lines("Sanne de Vries", "Kade 57", "9744 zz Groningen", "0698765432", "Order"))!!
+        assertEquals("9744ZZ", r.postcode); assertEquals("57", r.houseNo); assertEquals("Kade", r.street)
+        assertNull(r.deliveryTime)
+    }
+
+    @Test fun houseNumberAddition() {
+        val r = ReceiptParser.parse(lines("Klant", "A. Test", "Lange Laan 120-2", "9741 AA Groningen"))!!
+        assertEquals("120-2", r.houseNo); assertEquals("Lange Laan", r.street)
+    }
+
+    @Test fun noAddressMeansNull() {
+        assertNull(ReceiptParser.parse(lines("Bestelling", "1× Uramaki € 9,50", "Totaal € 9,50")))
+    }
+
+    @Test fun itemLinesAreNotStreets() {
+        // "Box 48" style item lines above a postcode must not be taken as the street
+        val r = ReceiptParser.parse(lines("Klant", "Kees", "Molenweg 4", "9712 CD Groningen"))
+        assertNotNull(r); assertEquals("Molenweg", r!!.street)
+    }
+
+    @Test fun croppedHeaderAndItemAreNotANote() {
+        val ls = listOf(
+            Line("Sanne de Vries", 300, 250, 800, 350),
+            Line("Kade 57", 340, 420, 700, 520),
+            Line("9744 zz Groningen", 380, 560, 1000, 660),
+            Line("0698765432", 420, 690, 860, 790),
+            Line("Orde", 1110, 700, 1280, 800),
+            Line("tic Tas", 910, 930, 1120, 1000),
+        )
+        val r = ReceiptParser.parse(ls)!!
+        assertEquals("Kade", r.street); assertEquals("0698765432", r.phone); assertNull(r.note)
+    }
+}

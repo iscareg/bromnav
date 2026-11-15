@@ -12,7 +12,7 @@ import androidx.core.content.ContextCompat
  *
  *   adb shell am broadcast -a nl.bromnav.DBG --es cmd state
  *   adb shell am broadcast -a nl.bromnav.DBG --es cmd add --es q "Vismarkt 10" --es order 1201 --es due 02:30
- *   cmd = clear | add | move (--es from N --es to M, 1-based) | auto | undo | cancel (--es n N) | restore (--es n N) | go | resetstats | sim | simstop | delivered | skip | end | list | nolist | state
+ *   cmd = clear | add | move (--es from N --es to M, 1-based) | auto | undo | ocr (--es path P [--es add 1]) | cancel (--es n N) | restore (--es n N) | go | resetstats | sim | simstop | delivered | skip | end | list | nolist | state
  *
  * Every command answers with "<cmd> -> <result/state JSON>" in logcat (tag BromNavDbg) and in
  * <external files>/dbg_reply.txt.
@@ -40,6 +40,7 @@ object DebugBridge {
                         "move" -> { a.dbgMove(i.getStringExtra("from")!!.toInt(), i.getStringExtra("to")!!.toInt()); reply("ok") }
                         "auto" -> { a.dbgAuto(); reply("ok") }
                         "undo" -> reply(a.dbgUndo())
+                        "ocr" -> a.dbgOcr(i.getStringExtra("path")!!, i.getStringExtra("add") == "1", reply)
                         "cancel" -> reply(a.dbgCancel(i.getStringExtra("n")!!.toInt()))
                         "restore" -> reply(a.dbgRestore(i.getStringExtra("n")!!.toInt()))
                         "resetstats" -> { a.dbgResetStats(); reply("ok") }

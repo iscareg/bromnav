@@ -244,7 +244,12 @@ class MainActivity : AppCompatActivity(), LocationListener {
         infoCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; background = card(); elevation = dp(6).toFloat()
             setPadding(dp(14), dp(10), dp(14), dp(10)); gravity = Gravity.CENTER_HORIZONTAL
-            setOnClickListener { toggleList() }
+            setOnClickListener {
+                val t = legTarget
+                if (bigBox.visibility == View.VISIBLE && t != null && t.phone.isNotEmpty())
+                    startActivity(Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:${t.phone}")))
+                else toggleList()
+            }
         }
         // normal content: street + number, details, variables
         normalBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
@@ -288,7 +293,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
         // icon row: 🔍  📋  [ main action ]  ☰   (centred)
         val icons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(10), 0, 0) }
-        icons.addView(iconBtn("🔍") { openSearch() })
+        icons.addView(iconBtn("📷") { openScanner() })
         icons.addView(iconBtn("📋") { toggleList() })
         mainBtn = Button(this).apply {
             isAllCaps = false; textSize = 18f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
@@ -320,11 +325,33 @@ class MainActivity : AppCompatActivity(), LocationListener {
         map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(Config.RESTAURANT.lat, Config.RESTAURANT.lon), 14.0))
     }
 
+    private val scanLauncher = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { res ->
+        val data = res.data ?: return@registerForActivityResult
+        val arr = org.json.JSONArray(data.getStringExtra(ScanActivity.EXTRA_STOPS) ?: "[]")
+        for (i in 0 until arr.length()) {
+            val st = Stop.fromJson(arr.getJSONObject(i))
+            if (store.stops.none { !it.delivered && it.key() == st.key() }) store.stops.add(st)
+        }
+        if (arr.length() > 0) {
+            store.save(); lastEtaCalc = 0; refreshAll()
+            worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+            toast("${arr.length()} stop${if (arr.length() > 1) "s" else ""} added from receipts")
+            if (mode == Mode.NAV && !store.manualOrder) autoOrder()
+        }
+        if (data.getBooleanExtra(ScanActivity.EXTRA_TYPE_INSTEAD, false)) openSearch()
+    }
+
+    private fun openScanner() {
+        scanLauncher.launch(Intent(this, ScanActivity::class.java)
+            .putExtra(ScanActivity.EXTRA_EXISTING, store.pending().map { it.key() }.toTypedArray()))
+    }
+
     private fun toggleList() { listOpen = !listOpen; refreshAll() }
 
     private fun openMenu(anchor: View) {
         val pm = PopupMenu(this, anchor)
-        pm.menu.add(0, 1, 0, "Add address…")
+        pm.menu.add(0, 1, 0, "Type an address…")
+        pm.menu.add(0, 9, 0, "📷 Scan receipts…")
         pm.menu.add(0, 2, 0, "Stats & history")
         pm.menu.add(0, 3, 0, if (voice.enabled) "Voice: on (tap to mute)" else "Voice: off (tap to enable)")
         if (mode == Mode.NAV) {
@@ -336,6 +363,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> openSearch()
+                9 -> openScanner()
                 2 -> startActivity(Intent(this, StatsActivity::class.java))
                 3 -> voice.enabled = !voice.enabled
                 4 -> skip()
@@ -404,6 +432,12 @@ class MainActivity : AppCompatActivity(), LocationListener {
             s.deadline?.let { setText(hm(it)) }
         }
         box.addView(orderEt); box.addView(timeEt)
+        val info = listOfNotNull(s.name.takeIf { it.isNotEmpty() }?.let { "🔔 $it" }, s.note.takeIf { it.isNotEmpty() }?.let { "📝 $it" }).joinToString("\n")
+        if (info.isNotEmpty()) box.addView(TextView(this).apply { text = info; textSize = 14f; setPadding(0, dp(8), 0, 0) })
+        if (s.phone.isNotEmpty()) box.addView(Button(this).apply {
+            text = "📞 Call ${s.phone}"; isAllCaps = false
+            setOnClickListener { startActivity(Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:${s.phone}"))) }
+        })
         AlertDialog.Builder(this).setTitle(s.label).setView(box)
             .setPositiveButton("Save") { _, _ ->
                 s.orderNo = orderEt.text.toString().trim()
@@ -438,7 +472,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     private fun startRun() {
         val pending = store.pending()
-        if (pending.isEmpty()) { openSearch(); return }
+        if (pending.isEmpty()) { openScanner(); return }
         val start = here()?.takeIf { Geo.dist(it, Config.RESTAURANT) < 30_000 } ?: Config.RESTAURANT
         if (store.manualOrder) {
             mode = Mode.NAV
@@ -763,7 +797,10 @@ class MainActivity : AppCompatActivity(), LocationListener {
             bigNumTv.text = next.number().ifEmpty { "?" }
             bigSubTv.text = "${next.streetName()} · ${Navigator.fmtDist(pr.remainingM)}" +
                 (if (next.orderNo.isNotEmpty()) " · #${next.orderNo}" else "") +
-                (side?.let { " · on the $it" } ?: "")
+                (side?.let { " · on the $it" } ?: "") +
+                (if (next.name.isNotEmpty()) "\n🔔 ${next.name}" else "") +
+                (if (next.note.isNotEmpty()) "\n📝 ${next.note}" else "") +
+                (if (next.phone.isNotEmpty()) "\n📞 tap here to call" else "")
             return
         }
         normalBox.visibility = View.VISIBLE; bigBox.visibility = View.GONE
@@ -772,7 +809,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 streetTv.text = Config.RESTAURANT_NAME; numberTv.text = "🏠"
                 detailTv.text = "All delivered — heading back" + (pr?.let { " · ${Navigator.fmtDist(it.remainingM)}" } ?: "")
             }
-            next == null -> { streetTv.text = "No stops yet"; numberTv.text = ""; detailTv.text = "Tap 🔍 to add an address, or long-press the map" }
+            next == null -> { streetTv.text = "No stops yet"; numberTv.text = ""; detailTv.text = "Tap 📷 to scan receipts (or ☰ → type an address)" }
             else -> {
                 streetTv.text = next.streetName(); numberTv.text = next.number()
                 val parts = ArrayList<String>()
@@ -782,6 +819,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                     parts.add(Navigator.fmtDist(pr.remainingM)); parts.add("ETA ${hm(System.currentTimeMillis() + (etaS * 1000).toLong())}")
                 } else etaByStop[next.id]?.let { parts.add("ETA ${hm(it)}") }
                 next.deadline?.let { parts.add("due ${hm(it)}") }
+                if (next.note.isNotEmpty()) parts.add("📝 note")
                 if (pending.size > 1) parts.add("+${pending.size - 1} more")
                 detailTv.text = parts.joinToString(" · ")
             }
@@ -846,7 +884,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private fun refreshAll() {
         if (!::infoCard.isInitialized) return
         mainBtn.text = when {
-            mode == Mode.PLAN && store.pending().isEmpty() -> "+ Add"
+            mode == Mode.PLAN && store.pending().isEmpty() -> "📷 Scan"
             mode == Mode.PLAN -> "Go ▶"
             legTarget == null -> "Done ✓"
             else -> "Delivered ✓"
@@ -912,6 +950,38 @@ class MainActivity : AppCompatActivity(), LocationListener {
     internal fun dbgClear() { if (mode == Mode.NAV) endNav(); store.stops.clear(); store.manualOrder = false; store.save(); refreshAll() }
     internal fun dbgMove(from: Int, to: Int) = moveStop(from - 1, to - 1)
     internal fun dbgAuto() = autoOrder()
+
+    /** OCR a receipt image file (path relative to the app's external files dir), optionally add it. */
+    internal fun dbgOcr(path: String, add: Boolean, done: (String) -> Unit) {
+        net.execute {
+            val o = org.json.JSONObject()
+            try {
+                val f = File(getExternalFilesDir(null), path)
+                val bmp = android.graphics.BitmapFactory.decodeFile(f.absolutePath) ?: throw IllegalArgumentException("cannot read $f")
+                val t0 = System.currentTimeMillis()
+                val res = ReceiptOcr.parseBitmap(bmp)
+                val r = res.receipt; val lines = res.lines
+                o.put("ms", System.currentTimeMillis() - t0).put("lines", lines.size).put("rotation", res.rotation)
+                o.put("raw", org.json.JSONArray(lines.map { "${it.left},${it.top},${it.right},${it.bottom} ${it.text}" }))
+                if (r == null) {
+                    o.put("parsed", false).put("text", org.json.JSONArray(lines.map { it.text }))
+                } else {
+                    o.put("parsed", true).put("postcode", r.postcode).put("houseNo", r.houseNo).put("street", r.street)
+                        .put("city", r.city).put("name", r.name != null).put("phone", r.phone != null)
+                        .put("orderNo", r.orderNo).put("deliveryTime", r.deliveryTime).put("asap", r.asap).put("note", r.note)
+                    val a = runCatching { PdokGeocoder.byPostcode(r.postcode, r.houseNo) }.getOrNull()
+                    o.put("bag", a?.label)
+                    if (add && a != null) ui.post {
+                        val st = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, r.orderNo ?: "",
+                            r.deliveryTime?.let { parseHm(it) }, street = a.street, houseNo = a.houseNo,
+                            phone = r.phone ?: "", note = r.note ?: "", name = r.name ?: "")
+                        store.stops.add(st); store.save(); lastEtaCalc = 0; refreshAll()
+                    }
+                }
+            } catch (e: Exception) { o.put("error", e.toString()) }
+            ui.post { done(o.toString()) }
+        }
+    }
     internal fun dbgUndo(): String { val a = undoAction ?: return "nothing to undo"; hideUndo.run(); a(); return "ok" }
     internal fun dbgCancel(n: Int): String { val st = store.pending().getOrNull(n - 1) ?: return "no stop $n"; cancelStop(st); return "ok" }
     internal fun dbgRestore(n: Int): String { val st = store.cancelled().getOrNull(n - 1) ?: return "no cancelled $n"; restoreStop(st); return "ok" }

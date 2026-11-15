@@ -3,6 +3,7 @@
 #   tools/dbg.sh state
 #   tools/dbg.sh add "Vismarkt 10" 1201 02:30
 #   tools/dbg.sh move 3 1      (stop 3 becomes first; switches to manual order)
+#   tools/dbg.sh ocr receipts_test/x.jpg [add]   (OCR an image in the app's files dir)
 #   tools/dbg.sh cancel 2 | restore 1 | undo
 #   tools/dbg.sh auto | go | resetstats | sim | simstop | delivered | skip | end | clear | list | nolist
 source "$(dirname "$0")/../env.sh"
@@ -11,12 +12,13 @@ cmd=$1; shift
 args=(--es cmd "$cmd")
 if [ "$cmd" = move ]; then args+=(--es from "$1" --es to "$2"); fi
 if [ "$cmd" = cancel ] || [ "$cmd" = restore ]; then args+=(--es n "$1"); fi
+if [ "$cmd" = ocr ]; then args+=(--es path "$1"); [ "$2" = add ] && args+=(--es add 1); fi
 if [ "$cmd" = add ]; then
   args+=(--es q "'$1'"); [ -n "$2" ] && args+=(--es order "$2"); [ -n "$3" ] && args+=(--es due "$3")
 fi
 adb shell rm -f $F
 adb shell am broadcast -a nl.bromnav.DBG "${args[@]}" >/dev/null
-for i in $(seq 1 60); do
+for i in $(seq 1 160); do
   out=$(adb shell cat $F 2>/dev/null)
   [ -n "$out" ] && break; sleep 0.25
 done

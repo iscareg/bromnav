@@ -16,20 +16,30 @@ data class Stop(
     var houseNo: String = "",
     /** order cancelled/disabled by the user: kept in the list, ignored for routing */
     var cancelled: Boolean = false,
+    var phone: String = "",
+    /** courier note from the receipt ("Voor bezorger: ...") */
+    var note: String = "",
+    /** customer name (for the doorbell); never written to history */
+    var name: String = "",
 ) {
     /** street / number, parsed from the label if PDOK fields are missing (e.g. old data) */
     fun streetName() = street.ifEmpty { Regex("""^(.*?)\s+\d""").find(label)?.groupValues?.get(1) ?: label }
     fun number() = houseNo.ifEmpty { Regex("""\s(\d+[^,\s]*)""").find(label)?.groupValues?.get(1) ?: "" }
 
+    /** "1234AB 17": identifies the address of a receipt */
+    fun key() = "${Regex("""\d{4}[A-Z]{2}""").find(label)?.value} ${houseNo.uppercase()}"
+
     fun toJson() = JSONObject().put("id", id).put("label", label).put("lat", pos.lat).put("lon", pos.lon)
         .put("orderNo", orderNo).put("deadline", deadline ?: -1L).put("delivered", delivered)
         .put("street", street).put("houseNo", houseNo).put("cancelled", cancelled)
+        .put("phone", phone).put("note", note).put("name", name)
 
     companion object {
         fun fromJson(o: JSONObject) = Stop(
             o.getLong("id"), o.getString("label"), LatLon(o.getDouble("lat"), o.getDouble("lon")),
             o.optString("orderNo"), o.optLong("deadline", -1L).takeIf { it > 0 }, o.optBoolean("delivered"),
             o.optString("street"), o.optString("houseNo"), o.optBoolean("cancelled"),
+            o.optString("phone"), o.optString("note"), o.optString("name"),
         )
     }
 }
