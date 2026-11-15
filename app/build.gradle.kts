@@ -6,6 +6,13 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Release APKs carry the offline maps (data/ is not in git: tools/update_data.sh fetches it)
+val copyMapData = tasks.register<Sync>("copyMapData") {
+    from(rootProject.file("data/segments")) { include("*.rd5"); into("mapdata") }
+    from(rootProject.file("data/tiles")) { include("groningen.pmtiles"); into("mapdata") }
+    into(layout.buildDirectory.dir("mapassets"))
+}
+
 android {
     namespace = "nl.bromnav"
     compileSdk = 35
@@ -32,8 +39,7 @@ android {
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
-    // Release APKs carry the offline maps (data/ is not in git: tools/update_data.sh fetches it)
-    sourceSets.getByName("release").assets.srcDir(layout.buildDirectory.dir("mapassets"))
+    sourceSets.getByName("release").assets.srcDir(copyMapData)   // task output -> implicit dependencies
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -57,10 +63,3 @@ dependencies {
     implementation("androidx.camera:camera-view:1.4.2")
     testImplementation("junit:junit:4.13.2")
 }
-
-val copyMapData = tasks.register<Copy>("copyMapData") {
-    from(rootProject.file("data/segments")) { include("*.rd5") }
-    from(rootProject.file("data/tiles")) { include("groningen.pmtiles") }
-    into(layout.buildDirectory.dir("mapassets/mapdata"))
-}
-tasks.matching { it.name == "mergeReleaseAssets" }.configureEach { dependsOn(copyMapData) }
