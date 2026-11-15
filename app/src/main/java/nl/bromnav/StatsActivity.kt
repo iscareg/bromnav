@@ -56,7 +56,8 @@ class StatsActivity : AppCompatActivity() {
             line("Average orders per lap: %.1f".format(l.map { it.orders }.average()))
             line("Average lap distance: %.1f km".format(l.map { it.distM }.average() / 1000))
         }
-        line("Learned speed factors: ${speed.describe()}", 12f, "#777777")
+        line("Your speed multiplier (time vs app): short legs ×%.2f · medium ×%.2f · long ×%.2f"
+            .format(speed.factor(500.0), speed.factor(2500.0), speed.factor(6000.0)), 13f, "#777777")
 
         if (l.isNotEmpty()) {
             title("Laps")

@@ -48,4 +48,17 @@ class LogicTest {
         val urgent = TspSolver.solve(t, listOf(1, 2), 3, mapOf(2 to 160.0), 0.0)
         assertEquals(listOf(2, 1), urgent.order)
     }
+
+    @Test fun marginPrefersBuffer() {
+        // A (node 1) has a deadline that is met either way but only barely if visited second;
+        // B (node 2) has no deadline. Going A first costs 20 s extra driving but keeps the buffer.
+        val t = arrayOf(
+            doubleArrayOf(0.0, 300.0, 280.0, 0.0),
+            doubleArrayOf(300.0, 0.0, 300.0, 300.0),
+            doubleArrayOf(280.0, 300.0, 0.0, 300.0),
+            doubleArrayOf(0.0, 300.0, 280.0, 0.0),
+        )
+        val r = TspSolver.solve(t, listOf(1, 2), 3, mapOf(1 to 600.0), 0.0)
+        assertEquals(listOf(1, 2), r.order)
+    }
 }

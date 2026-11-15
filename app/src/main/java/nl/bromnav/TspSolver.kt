@@ -7,13 +7,18 @@ package nl.bromnav
  * Runs typically have 1-6 stops, so we try every order (6! = 720) and keep the exact best.
  * Above [EXACT_MAX] stops we fall back to nearest neighbour + 2-opt.
  *
- * Objective = total travel seconds + LATE_WEIGHT * seconds late (summed over stops).
+ * Objective = total travel seconds
+ *           + LATE_WEIGHT   * seconds late                      (summed over stops)
+ *           + MARGIN_WEIGHT * seconds inside the safety margin  (arriving < MARGIN_S before the deadline)
+ * The margin term makes the plan keep a buffer for tight orders instead of only minimising time.
  */
 object TspSolver {
     const val EXACT_MAX = 8
     const val LATE_WEIGHT = 10.0
+    const val MARGIN_WEIGHT = 2.0
+    const val MARGIN_S = 300.0
 
-    data class Result(val order: List<Int>, val totalS: Double, val lateS: Double, val arrivals: DoubleArray)
+    data class Result(val order: List<Int>, val totalS: Double, val lateS: Double, val arrivals: DoubleArray, val marginS: Double = 0.0)
 
     /**
      * @param t travel time matrix in seconds, t[i][j] from i to j (already scaled by your speed factor)
@@ -31,20 +36,23 @@ object TspSolver {
     }
 
     fun evaluate(t: Array<DoubleArray>, order: List<Int>, endNode: Int, deadlines: Map<Int, Double?>, serviceS: Double): Result {
-        var now = 0.0; var late = 0.0; var prev = 0
+        var now = 0.0; var late = 0.0; var margin = 0.0; var prev = 0
         val arr = DoubleArray(order.size)
         for ((k, s) in order.withIndex()) {
             now += t[prev][s]
             arr[k] = now
-            deadlines[s]?.let { if (now > it) late += now - it }
+            deadlines[s]?.let {
+                if (now > it) late += now - it
+                if (now > it - MARGIN_S) margin += minOf(now - (it - MARGIN_S), MARGIN_S)
+            }
             now += serviceS
             prev = s
         }
         now += t[prev][endNode]
-        return Result(order, now, late, arr)
+        return Result(order, now, late, arr, margin)
     }
 
-    private fun cost(r: Result) = r.totalS + LATE_WEIGHT * r.lateS
+    private fun cost(r: Result) = r.totalS + LATE_WEIGHT * r.lateS + MARGIN_WEIGHT * r.marginS
 
     private fun exact(t: Array<DoubleArray>, stops: List<Int>, end: Int, dl: Map<Int, Double?>, svc: Double): Result {
         var best: Result? = null

@@ -15,6 +15,10 @@ cheap Android phone (tested on a a low-end MediaTek phone, 4 GB RAM).
   house number appears, with an arrow for the side of the road it's on.
 - **English voice**: turn instructions, plus *"move onto the moped path"* / *"leave the moped
   path and join the road"*, and which side the house number is on.
+- **Manual override**: ▲/▼ in the stop list (📋) or long-press = "next"; switches the run to manual
+  order until you tap the header to auto-optimise again.
+- **Undo** for an accidental *Delivered*/*Done*, and **cancel (✕)** to disable an order without
+  deleting it (↺ restores, also with undo).
 - **Stats**: lap times, time per order, average speed, and per-order history.
 - Planned: receipt scanning (ML Kit OCR) — see `the project plan`.
 
@@ -48,6 +52,18 @@ tools/route.sh "6.5734,53.2182|6.5850,53.2250"   # one route with its way tags
 
 Add trips where other navigators route you illegally to `CASES` in `tools/test_routes.py`.
 
+## Debug remote control (debug builds)
+
+The app can be driven from the PC with no tapping; replies come back as JSON state:
+
+```bash
+tools/dbg.sh add "Vismarkt 10" 1201 18:45   # geocode + add stop with order no + deadline
+tools/dbg.sh go          # optimise + start navigation
+tools/dbg.sh sim         # fake GPS rides along the route (~25 km/h)
+tools/dbg.sh state       # mode, stops, ETAs, stars, route, banner/card text, spoken phrases
+tools/dbg.sh delivered | undo | cancel 2 | restore 1 | move 3 1 | auto | end | clear | resetstats
+```
+
 ## Layout
 
 | Path | What |
@@ -59,4 +75,5 @@ Add trips where other navigators route you illegally to `CASES` in `tools/test_r
 | `SpeedModel.kt`, `History.kt`, `StatsActivity.kt` | personal speed factor, urgency stars, stats |
 | `PdokGeocoder.kt` | Dutch address search (PDOK Locatieserver / BAG) |
 | `MapStyle.kt` | offline MapLibre style for the Protomaps tiles |
-| `tools/` | data download/push, route tests, adb UI driver |
+| `DebugBridge.kt` | debug-only broadcast interface used by `tools/dbg.sh` |
+| `tools/` | data download/push, route tests, debug remote, adb UI driver |

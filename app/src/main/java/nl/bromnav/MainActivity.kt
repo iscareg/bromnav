@@ -82,6 +82,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private lateinit var subTv: TextView
     private lateinit var listCard: LinearLayout
     private lateinit var stopsRv: RecyclerView
+    private lateinit var orderTv: TextView
     private lateinit var infoCard: LinearLayout
     private lateinit var normalBox: LinearLayout
     private lateinit var streetTv: TextView
@@ -96,6 +97,11 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private lateinit var bigRightTv: TextView
     private lateinit var bigSubTv: TextView
     private lateinit var mainBtn: Button
+    private lateinit var recenterBtn: Button
+    private lateinit var undoBar: LinearLayout
+    private lateinit var undoTv: TextView
+    private var undoAction: (() -> Unit)? = null
+    private val hideUndo = Runnable { undoBar.visibility = View.GONE; undoAction = null }
     private val adapter = StopsAdapter()
 
     // --- state
@@ -143,6 +149,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         planner = Planner(engine!!, speed)
 
         buildUi(savedInstanceState, tiles)
+        if (BuildConfig.DEBUG) DebugBridge.register(this)
         requestLocation()
         refreshAll()
         worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
@@ -155,6 +162,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     override fun onLowMemory() { super.onLowMemory(); mapView?.onLowMemory() }
     override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); mapView?.onSaveInstanceState(outState) }
     override fun onDestroy() {
+        if (BuildConfig.DEBUG) DebugBridge.unregister(this)
         (getSystemService(LOCATION_SERVICE) as LocationManager).removeUpdates(this)
         mapView?.onDestroy(); voice.shutdown(); worker.shutdownNow(); net.shutdownNow()
         super.onDestroy()
@@ -187,7 +195,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private fun iconBtn(label: String, onClick: (View) -> Unit) = Button(this).apply {
         text = label; textSize = 22f; setPadding(0, 0, 0, 0)
         background = card(Color.WHITE, 28); elevation = dp(4).toFloat()
-        layoutParams = LinearLayout.LayoutParams(dp(56), dp(56)).apply { setMargins(dp(5), 0, dp(5), 0) }
+        layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { setMargins(dp(4), 0, dp(4), 0) }
         setOnClickListener { onClick(it) }
     }
 
@@ -211,10 +219,11 @@ class MainActivity : AppCompatActivity(), LocationListener {
         root.addView(banner, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply { setMargins(side, dp(14), side, 0) })
 
         // --- recenter: middle of the right edge
-        root.addView(Button(this).apply {
+        recenterBtn = Button(this).apply {
             text = "◎"; textSize = 22f; background = card(Color.WHITE, 28); elevation = dp(4).toFloat()
             setOnClickListener { follow = true; lastFix?.let { moveCamera(it, mode == Mode.NAV) } ?: showRestaurant() }
-        }, FrameLayout.LayoutParams(dp(54), dp(54), Gravity.END or Gravity.CENTER_VERTICAL).apply { rightMargin = dp(8) })
+        }
+        root.addView(recenterBtn, FrameLayout.LayoutParams(dp(54), dp(54), Gravity.END or Gravity.CENTER_VERTICAL).apply { rightMargin = dp(8) })
 
         // --- bottom column: [stop list card] [info card] [icon row]
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
@@ -223,6 +232,11 @@ class MainActivity : AppCompatActivity(), LocationListener {
             orientation = LinearLayout.VERTICAL; background = card(); elevation = dp(6).toFloat()
             setPadding(dp(8), dp(6), dp(8), dp(6)); visibility = View.GONE
         }
+        orderTv = tv(13f, "#14335e", true).apply {
+            gravity = Gravity.CENTER; setPadding(dp(6), dp(4), dp(6), dp(6))
+            setOnClickListener { if (store.manualOrder) autoOrder() }
+        }
+        listCard.addView(orderTv, LinearLayout.LayoutParams(-1, -2))
         stopsRv = RecyclerView(this).apply { layoutManager = LinearLayoutManager(this@MainActivity); adapter = this@MainActivity.adapter }
         listCard.addView(stopsRv, LinearLayout.LayoutParams(-1, -2))
         bottom.addView(listCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
@@ -259,6 +273,17 @@ class MainActivity : AppCompatActivity(), LocationListener {
         bigSubTv = tv(16f, "#444444").apply { gravity = Gravity.CENTER }
         bigBox.addView(bigRow); bigBox.addView(bigSubTv, LinearLayout.LayoutParams(-1, -2))
         infoCard.addView(bigBox, LinearLayout.LayoutParams(-1, -2))
+        undoBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; visibility = View.GONE
+            background = card(Color.parseColor("#F0202020"), 14); setPadding(dp(14), dp(4), dp(6), dp(4))
+        }
+        undoTv = tv(15f, "#ffffff").apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END }
+        undoBar.addView(undoTv, LinearLayout.LayoutParams(0, -2, 1f))
+        undoBar.addView(Button(this).apply {
+            text = "UNDO"; textSize = 16f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#ffd54a"))
+            background = null; setOnClickListener { val a = undoAction; hideUndo.run(); a?.invoke() }
+        }, LinearLayout.LayoutParams(-2, dp(48)))
+        bottom.addView(undoBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         bottom.addView(infoCard, LinearLayout.LayoutParams(-1, -2))
 
         // icon row: 🔍  📋  [ main action ]  ☰   (centred)
@@ -268,14 +293,14 @@ class MainActivity : AppCompatActivity(), LocationListener {
         mainBtn = Button(this).apply {
             isAllCaps = false; textSize = 18f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
             background = card(Color.parseColor("#1f6fe5"), 28); elevation = dp(4).toFloat()
-            layoutParams = LinearLayout.LayoutParams(dp(150), dp(56)).apply { setMargins(dp(5), 0, dp(5), 0) }
+            layoutParams = LinearLayout.LayoutParams(dp(128), dp(52)).apply { setMargins(dp(4), 0, dp(4), 0) }
             setOnClickListener { if (mode == Mode.PLAN) startRun() else delivered() }
         }
         icons.addView(mainBtn)
         icons.addView(iconBtn("☰") { openMenu(it) })
         bottom.addView(icons, LinearLayout.LayoutParams(-1, -2))
 
-        root.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { setMargins(side, 0, side, dp(34)) })
+        root.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { setMargins(side, 0, side, dp(44)) })
         setContentView(root)
 
         mv.getMapAsync { m ->
@@ -307,6 +332,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             pm.menu.add(0, 5, 0, "End navigation")
         } else pm.menu.add(0, 6, 0, "Clear all stops")
         pm.menu.add(0, 7, 0, "Remove all avoid marks")
+        if (BuildConfig.DEBUG && mode == Mode.NAV) pm.menu.add(0, 8, 0, if (simulating) "Stop simulation" else "Simulate ride (debug)")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> openSearch()
@@ -316,6 +342,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 5 -> endNav()
                 6 -> confirmClear()
                 7 -> { store.nogos.clear(); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoid marks removed") }
+                8 -> if (simulating) simulating = false else simulate()
             }
             true
         }
@@ -390,7 +417,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     private fun confirmClear() {
         AlertDialog.Builder(this).setMessage("Remove all stops of this run?")
-            .setPositiveButton("Clear") { _, _ -> store.stops.clear(); store.save(); refreshAll() }
+            .setPositiveButton("Clear") { _, _ -> store.stops.clear(); store.manualOrder = false; store.save(); refreshAll() }
             .setNegativeButton("Cancel", null).show()
     }
 
@@ -413,6 +440,11 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val pending = store.pending()
         if (pending.isEmpty()) { openSearch(); return }
         val start = here()?.takeIf { Geo.dist(it, Config.RESTAURANT) < 30_000 } ?: Config.RESTAURANT
+        if (store.manualOrder) {
+            mode = Mode.NAV
+            if (runStartMs == 0L) { runStartMs = System.currentTimeMillis(); lapDeliveries = 0; lapOdoM = 0.0 }
+            startLeg(); return
+        }
         mainBtn.text = "Planning…"
         worker.execute {
             val t0 = System.currentTimeMillis()
@@ -421,14 +453,25 @@ class MainActivity : AppCompatActivity(), LocationListener {
             }
             Log.i(TAG, "optimised ${pending.size} stops in ${System.currentTimeMillis() - t0} ms")
             ui.post {
-                val delivered = store.stops.filter { it.delivered }
-                store.stops.clear(); store.stops.addAll(delivered); store.stops.addAll(plan.order); store.save()
+                // the user re-ordered by hand (or changed stops) while we were planning: their order wins
+                if (!store.manualOrder && store.pending().toSet() == plan.order.toSet()) {
+                    val delivered = store.stops.filter { it.delivered }
+                    store.stops.clear(); store.stops.addAll(delivered); store.stops.addAll(plan.order); store.save()
+                }
                 mode = Mode.NAV
                 if (runStartMs == 0L) { runStartMs = System.currentTimeMillis(); lapDeliveries = 0; lapOdoM = 0.0 }
                 startLeg()
             }
         }
     }
+
+    private fun showUndo(text: String, action: () -> Unit) {
+        undoTv.text = text; undoAction = action; undoBar.visibility = View.VISIBLE
+        ui.removeCallbacks(hideUndo); ui.postDelayed(hideUndo, 10_000)
+    }
+
+    /** Timing of a leg to restore after an undone "Delivered" (startMs, predictedS, distM, odoM). */
+    private var resumeLeg: DoubleArray? = null
 
     private fun startLeg() {
         legTarget = store.pending().firstOrNull()
@@ -446,12 +489,19 @@ class MainActivity : AppCompatActivity(), LocationListener {
             Log.i(TAG, "route ${r.lengthM} m / ${r.timeS} s computed in ${System.currentTimeMillis() - t0} ms")
             ui.post {
                 setRoute(r)
-                legStartMs = System.currentTimeMillis(); legOdoM = 0.0
-                legPredictedS = r.timeS.toDouble(); legDistM = r.lengthM.toDouble()
+                val resume = resumeLeg; resumeLeg = null
+                if (resume != null) {
+                    legStartMs = resume[0].toLong(); legPredictedS = resume[1]; legDistM = resume[2]; legOdoM = resume[3]
+                } else {
+                    legStartMs = System.currentTimeMillis(); legOdoM = 0.0
+                    legPredictedS = r.timeS.toDouble(); legDistM = r.lengthM.toDouble()
+                }
                 val mins = Math.round(r.timeS * speed.factor(legDistM) / 60.0)
                 voice.say(legTarget?.let { "Going to ${spokenStop(it)}, $mins minutes" } ?: "Heading back to ${Config.RESTAURANT_NAME}, $mins minutes")
                 follow = true
-                lastFix?.let { onLocationChanged(it) }
+                val fix = lastFix
+                if (fix != null) onLocationChanged(fix, false)
+                else navigator?.let { n -> val pr = n.update(r.pts[0]); lastProgress = pr; showProgress(pr); updateInfoCard() }
             }
         }
     }
@@ -479,27 +529,87 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val t = legTarget
         val now = System.currentTimeMillis()
         if (t == null) {
-            if (runStartMs > 0) history.addLap(LapRecord(runStartMs, runStartMs, now, lapDeliveries, lapOdoM))
+            val lapStart = runStartMs; val dels = lapDeliveries; val odo = lapOdoM
+            val lapSaved = lapStart > 0
+            if (lapSaved) history.addLap(LapRecord(lapStart, lapStart, now, dels, odo))
             runStartMs = 0
-            voice.say("Run complete"); endNav(); return
+            voice.say("Run complete"); endNav()
+            showUndo("Run finished") {
+                if (lapSaved) history.removeLastLap()
+                runStartMs = lapStart; lapDeliveries = dels; lapOdoM = odo
+                mode = Mode.NAV; startLeg()
+            }
+            return
         }
         val actual = (now - legStartMs) / 1000.0
-        speed.record(legDistM, legPredictedS, actual)
-        history.addOrder(OrderRecord(runStartMs, t.orderNo, t.label, if (legOdoM > 100) legOdoM else legDistM, legPredictedS, actual, t.deadline, now))
+        val leg = doubleArrayOf(legStartMs.toDouble(), legPredictedS, legDistM, legOdoM)
+        val sampled = speed.record(legDistM, legPredictedS, actual)
+        val saved = history.addOrder(OrderRecord(runStartMs, t.orderNo, t.label, if (legOdoM > 100) legOdoM else legDistM, legPredictedS, actual, t.deadline, now))
         lapDeliveries++
         t.delivered = true; store.save()
         startLeg()
+        showUndo("Delivered " + (if (t.orderNo.isNotEmpty()) "#${t.orderNo} " else "") + "${t.streetName()} ${t.number()}") {
+            if (sampled) speed.removeLast(leg[2])
+            if (saved) history.removeLastOrder()
+            lapDeliveries--
+            t.delivered = false
+            // put it back as the next stop
+            store.stops.remove(t); store.stops.add(store.stops.indexOfFirst { !it.delivered && !it.cancelled }.let { if (it < 0) store.stops.size else it }, t)
+            store.save()
+            resumeLeg = leg
+            startLeg()
+        }
+    }
+
+    /** Disable an order without deleting it (customer cancelled etc.). */
+    private fun cancelStop(st: Stop) {
+        val wasTarget = mode == Mode.NAV && st == legTarget
+        st.cancelled = true; store.save(); lastEtaCalc = 0
+        if (wasTarget) startLeg() else refreshAll()
+        showUndo("Cancelled " + (if (st.orderNo.isNotEmpty()) "#${st.orderNo} " else "") + "${st.streetName()} ${st.number()}") { restoreStop(st) }
+    }
+
+    private fun restoreStop(st: Stop) {
+        st.cancelled = false; store.save(); lastEtaCalc = 0
+        worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+        if (mode == Mode.NAV && store.pending().firstOrNull() != legTarget) startLeg() else refreshAll()
+    }
+
+    /** Manual override of the planned order (positions among pending stops, 0-based). */
+    private fun moveStop(from: Int, to: Int) {
+        store.movePending(from, to)
+        lastEtaCalc = 0
+        if (mode == Mode.NAV && store.pending().firstOrNull() != legTarget) startLeg() else refreshAll()
+    }
+
+    /** Back to automatic ordering: re-optimise the remaining stops from where you are. */
+    private fun autoOrder() {
+        store.manualOrder = false; store.save()
+        val pending = store.pending()
+        if (pending.size < 2) { refreshAll(); return }
+        val start = here() ?: Config.RESTAURANT
+        worker.execute {
+            val plan = runCatching { planner!!.optimise(start, pending, store.nogos) }.getOrNull() ?: return@execute
+            ui.post {
+                if (store.manualOrder || store.pending().toSet() != plan.order.toSet()) return@post
+                val done = store.stops.filter { it.delivered }
+                store.stops.clear(); store.stops.addAll(done); store.stops.addAll(plan.order); store.save()
+                lastEtaCalc = 0
+                if (mode == Mode.NAV && store.pending().firstOrNull() != legTarget) startLeg() else refreshAll()
+                toast("Order optimised")
+            }
+        }
     }
 
     private fun skip() {
         val t = legTarget ?: return
-        store.stops.remove(t); store.stops.add(t); store.save()
+        store.stops.remove(t); store.stops.add(t); store.manualOrder = true; store.save()
         startLeg()
     }
 
     private fun endNav() {
         mode = Mode.PLAN; navigator = null; legTarget = null; lastProgress = null
-        store.stops.removeAll { it.delivered }; store.save()
+        store.stops.removeAll { it.delivered || it.cancelled }; store.save()
         banner.visibility = View.GONE
         drawRoute(null); refreshAll()
         map?.animateCamera(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().tilt(0.0).bearing(0.0).padding(0.0, 0.0, 0.0, 0.0).build()))
@@ -530,7 +640,37 @@ class MainActivity : AppCompatActivity(), LocationListener {
         (lm.getLastKnownLocation(LocationManager.GPS_PROVIDER) ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER))?.let { onLocationChanged(it) }
     }
 
-    override fun onLocationChanged(loc: Location) {
+    // ---- debug: fake GPS that rides along the current route at ~25 km/h
+    private var simulating = false
+    private fun simulate() {
+        val r = navigator?.route ?: return
+        simulating = true
+        var along = 0.0; var i = 0
+        val v = 7.0
+        val tick = object : Runnable {
+            override fun run() {
+                val route = navigator?.route
+                if (!simulating || mode != Mode.NAV || route == null) { simulating = false; return }
+                if (route !== r) { simulating = false; simulate(); return }   // new leg -> restart
+                along = (along + v).coerceAtMost(route.cum.last())
+                while (i < route.pts.size - 2 && route.cum[i + 1] < along) i++
+                val a = route.pts[i]; val b = route.pts[i + 1]
+                val seg = (route.cum[i + 1] - route.cum[i]).coerceAtLeast(0.01)
+                val t = ((along - route.cum[i]) / seg).coerceIn(0.0, 1.0)
+                val l = Location(LocationManager.GPS_PROVIDER).apply {
+                    latitude = a.lat + t * (b.lat - a.lat); longitude = a.lon + t * (b.lon - a.lon)
+                    speed = v.toFloat(); bearing = Geo.bearing(a, b).toFloat(); accuracy = 5f; time = System.currentTimeMillis()
+                }
+                onLocationChanged(l, fromSim = true)
+                if (along < route.cum.last()) ui.postDelayed(this, 1000) else simulating = false
+            }
+        }
+        ui.post(tick)
+    }
+
+    override fun onLocationChanged(loc: Location) { if (!simulating) onLocationChanged(loc, false) }
+
+    private fun onLocationChanged(loc: Location, fromSim: Boolean) {
         val prev = lastFix
         if (loc.provider == LocationManager.NETWORK_PROVIDER && prev != null &&
             prev.provider == LocationManager.GPS_PROVIDER && loc.time - prev.time < 10_000) return
@@ -712,10 +852,12 @@ class MainActivity : AppCompatActivity(), LocationListener {
             else -> "Delivered ✓"
         }
         mainBtn.background = card(Color.parseColor(if (mode == Mode.NAV) "#1e9e4a" else "#1f6fe5"), 28)
-        listCard.visibility = if (listOpen && store.pending().isNotEmpty()) View.VISIBLE else View.GONE
+        listCard.visibility = if (listOpen && (store.pending().isNotEmpty() || store.cancelled().isNotEmpty())) View.VISIBLE else View.GONE
+        recenterBtn.visibility = if (listCard.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        orderTv.text = if (store.manualOrder) "Order: MANUAL · tap here to auto-optimise" else "Order: automatic (fastest, deadlines first) · ▲▼ to change"
         adapter.notifyDataSetChanged()
         stopsRv.layoutParams = stopsRv.layoutParams.apply {
-            height = if (store.pending().size > 4) dp(4 * 52) else ViewGroup.LayoutParams.WRAP_CONTENT
+            height = if (adapter.itemCount > 4) dp(4 * 52) else ViewGroup.LayoutParams.WRAP_CONTENT
         }
         updateInfoCard(); drawStops()
         if (System.currentTimeMillis() - lastEtaCalc > 2000) updateEtas()
@@ -765,10 +907,79 @@ class MainActivity : AppCompatActivity(), LocationListener {
         return c.timeInMillis
     }
 
+    // ------------------------------------------------------------------ debug bridge API (debug builds only)
+
+    internal fun dbgClear() { if (mode == Mode.NAV) endNav(); store.stops.clear(); store.manualOrder = false; store.save(); refreshAll() }
+    internal fun dbgMove(from: Int, to: Int) = moveStop(from - 1, to - 1)
+    internal fun dbgAuto() = autoOrder()
+    internal fun dbgUndo(): String { val a = undoAction ?: return "nothing to undo"; hideUndo.run(); a(); return "ok" }
+    internal fun dbgCancel(n: Int): String { val st = store.pending().getOrNull(n - 1) ?: return "no stop $n"; cancelStop(st); return "ok" }
+    internal fun dbgRestore(n: Int): String { val st = store.cancelled().getOrNull(n - 1) ?: return "no cancelled $n"; restoreStop(st); return "ok" }
+
+    internal fun dbgAdd(q: String, order: String, due: String?, done: (String) -> Unit) {
+        net.execute {
+            val a = runCatching { PdokGeocoder.search(q).firstOrNull() }.getOrNull()
+            ui.post {
+                if (a == null) { done("not found: $q"); return@post }
+                val s = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, order, due?.let { parseHm(it) }, street = a.street, houseNo = a.houseNo)
+                store.stops.add(s); store.save(); lastEtaCalc = 0; refreshAll()
+                worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+                done("added ${s.label}")
+            }
+        }
+    }
+
+    internal fun dbgResetStats() { history.clear(); speed.clear(); refreshAll() }
+    internal fun dbgGo() = startRun()
+    internal fun dbgDelivered() = delivered()
+    internal fun dbgSkip() = skip()
+    internal fun dbgEnd() = endNav()
+    internal fun dbgSim(on: Boolean) { if (on) { if (!simulating) simulate() } else simulating = false }
+    internal fun dbgList(open: Boolean) { listOpen = open; refreshAll() }
+
+    internal fun dbgState(): org.json.JSONObject {
+        val o = org.json.JSONObject()
+        o.put("mode", mode.name).put("simulating", simulating).put("listOpen", listOpen).put("manualOrder", store.manualOrder)
+        o.put("legTarget", legTarget?.label ?: if (mode == Mode.NAV) Config.RESTAURANT_NAME else null)
+        o.put("speedFactor2km", speed.factor(2000.0)).put("speedSamples", speed.sampleCount())
+        o.put("history", "${history.orders.size} orders, ${history.laps.size} laps")
+        o.put("fix", lastFix?.let { "%.5f,%.5f acc=%.0f %s".format(Locale.US, it.latitude, it.longitude, it.accuracy, it.provider) })
+        val stops = org.json.JSONArray()
+        store.pending().forEachIndexed { i, s ->
+            stops.put(org.json.JSONObject().put("n", i + 1).put("label", s.label).put("street", s.streetName()).put("no", s.number())
+                .put("order", s.orderNo).put("due", s.deadline?.let { hm(it) }).put("eta", etaByStop[s.id]?.let { hm(it) })
+                .put("stars", starsOf(s)).put("slackMin", slackMin(s)))
+        }
+        o.put("stops", stops)
+        o.put("cancelled", org.json.JSONArray(store.cancelled().map { it.label }))
+        o.put("undo", if (undoBar.visibility == View.VISIBLE) undoTv.text.toString() else null)
+        lastProgress?.let { p ->
+            o.put("progress", org.json.JSONObject().put("remainingM", p.remainingM.toInt()).put("remainingS", p.remainingS.toInt())
+                .put("offRouteM", p.offRouteM.toInt()).put("class", p.currentClass?.name)
+                .put("nextHint", p.nextHint?.let { Navigator.describe(it).second }).put("distToHintM", p.distToHintM.toInt())
+                .put("nextTransition", p.nextTransition?.let { Navigator.describeTransition(it) }).put("distToTransitionM", p.distToTransitionM.toInt()))
+        }
+        navigator?.route?.let { r ->
+            o.put("route", org.json.JSONObject().put("lengthM", r.lengthM).put("timeS", r.timeS).put("segments", r.segs.size)
+                .put("pathSegments", r.segs.count { it.cls == WayClass.MOPED_PATH }).put("hints", r.hints.size).put("transitions", r.transitions.size))
+        }
+        // what is on screen
+        o.put("screen", org.json.JSONObject()
+            .put("banner", if (banner.visibility == View.VISIBLE) "${arrowTv.text} ${instrTv.text} | ${subTv.text}" else null)
+            .put("card", if (bigBox.visibility == View.VISIBLE)
+                "BIG ${if (bigLeftTv.visibility == View.VISIBLE) "◀ " else ""}${bigNumTv.text}${if (bigRightTv.visibility == View.VISIBLE) " ▶" else ""} | ${bigSubTv.text}"
+                else "${streetTv.text} ${numberTv.text} | ${detailTv.text}")
+            .put("vars", "${speedTv.text} ${factorTv.text} ${starsTv.text}")
+            .put("mainButton", mainBtn.text))
+        o.put("voice", org.json.JSONArray(synchronized(voice.log) { voice.log.takeLast(8) }))
+        return o
+    }
+
     // ------------------------------------------------------------------ stop list
 
     private inner class StopsAdapter : RecyclerView.Adapter<StopsAdapter.VH>() {
-        inner class VH(val row: LinearLayout, val badge: TextView, val title: TextView, val sub: TextView) : RecyclerView.ViewHolder(row)
+        inner class VH(val row: LinearLayout, val badge: TextView, val title: TextView, val sub: TextView,
+                       val up: TextView, val down: TextView, val cancel: TextView) : RecyclerView.ViewHolder(row)
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
             val row = LinearLayout(parent.context).apply {
@@ -782,13 +993,28 @@ class MainActivity : AppCompatActivity(), LocationListener {
             col.addView(title); col.addView(sub)
             row.addView(badge, LinearLayout.LayoutParams(dp(32), dp(32)))
             row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
-            return VH(row, badge, title, sub)
+            fun arrow(t: String) = TextView(parent.context).apply {
+                text = t; textSize = 20f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#14335e"))
+                background = GradientDrawable().apply { setColor(Color.parseColor("#e9ecf1")); cornerRadius = dp(8).toFloat() }
+            }
+            val up = arrow("▲"); val down = arrow("▼")
+            row.addView(up, LinearLayout.LayoutParams(dp(42), dp(40)).apply { leftMargin = dp(4) })
+            row.addView(down, LinearLayout.LayoutParams(dp(42), dp(40)).apply { leftMargin = dp(4) })
+            val cancel = arrow("✕").apply { setTextColor(Color.parseColor("#d93025")) }
+            row.addView(cancel, LinearLayout.LayoutParams(dp(42), dp(40)).apply { leftMargin = dp(4) })
+            return VH(row, badge, title, sub, up, down, cancel)
         }
 
-        override fun getItemCount() = store.pending().size
+        override fun getItemCount() = store.pending().size + store.cancelled().size
 
         override fun onBindViewHolder(h: VH, position: Int) {
-            val s = store.pending()[position]
+            val pend = store.pending()
+            if (position >= pend.size) { bindCancelled(h, store.cancelled()[position - pend.size]); return }
+            val s = pend[position]
+            h.title.paintFlags = h.title.paintFlags and android.graphics.Paint.STRIKE_THRU_TEXT_FLAG.inv()
+            h.row.alpha = 1f; h.up.visibility = View.VISIBLE; h.down.visibility = View.VISIBLE
+            h.cancel.text = "✕"; h.cancel.setTextColor(Color.parseColor("#d93025"))
+            h.cancel.setOnClickListener { cancelStop(s) }
             h.badge.text = "${position + 1}"
             h.badge.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(urgencyColor(s)) }
             h.title.text = (if (s.orderNo.isNotEmpty()) "#${s.orderNo}  " else "") + s.label
@@ -800,6 +1026,24 @@ class MainActivity : AppCompatActivity(), LocationListener {
             if (parts.isEmpty()) parts.add("tap to set order no. / deadline")
             h.sub.text = parts.joinToString(" · ")
             h.row.setOnClickListener { editStop(s) }
+            h.row.setOnLongClickListener { moveStop(h.bindingAdapterPosition, 0); toast("${s.streetName()} ${s.number()} is next"); true }
+            h.up.alpha = if (position == 0) 0.3f else 1f
+            h.down.alpha = if (position == pend.size - 1) 0.3f else 1f
+            h.up.setOnClickListener { val p = h.bindingAdapterPosition; if (p > 0) moveStop(p, p - 1) }
+            h.down.setOnClickListener { val p = h.bindingAdapterPosition; if (p < store.pending().size - 1) moveStop(p, p + 1) }
+        }
+
+        private fun bindCancelled(h: VH, s: Stop) {
+            h.badge.text = "✕"
+            h.badge.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#9e9e9e")) }
+            h.title.text = (if (s.orderNo.isNotEmpty()) "#${s.orderNo}  " else "") + s.label
+            h.title.paintFlags = h.title.paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG
+            h.sub.text = "cancelled · tap ↺ to restore"
+            h.row.alpha = 0.6f
+            h.up.visibility = View.INVISIBLE; h.down.visibility = View.INVISIBLE
+            h.cancel.text = "↺"; h.cancel.setTextColor(Color.parseColor("#1e9e4a"))
+            h.cancel.setOnClickListener { restoreStop(s) }
+            h.row.setOnClickListener(null); h.row.setOnLongClickListener(null)
         }
     }
 }

@@ -25,8 +25,14 @@ class VoiceGuide(ctx: Context) : TextToSpeech.OnInitListener {
 
     fun newRoute(r: Route) { route = r; spoken.clear() }
 
+    /** last spoken phrases (for the debug interface) */
+    val log = ArrayList<String>()
+
     fun say(text: String) {
-        if (enabled && ready) tts.speak(text, TextToSpeech.QUEUE_ADD, null, text.hashCode().toString())
+        synchronized(log) { log.add(text); while (log.size > 30) log.removeAt(0) }
+        // spell units out so TTS never reads "m" as "minutes"
+        val spoken = text.replace(Regex("""(\d) m\b"""), "$1 metres").replace(Regex("""(\d) km\b"""), "$1 kilometres")
+        if (enabled && ready) tts.speak(spoken, TextToSpeech.QUEUE_ADD, null, spoken.hashCode().toString())
     }
 
     fun onProgress(p: Navigator.Progress, speedMps: Double) {

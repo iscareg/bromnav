@@ -53,7 +53,12 @@ class History(ctx: Context) {
         }
     }
 
-    fun addOrder(r: OrderRecord) { orders.add(r); save() }
+    /** Ignores impossible legs (> 60 km/h average = an accidental "Delivered" tap). */
+    fun addOrder(r: OrderRecord): Boolean { if (r.avgKmh > 60) return false; orders.add(r); save(); return true }
+
+    fun clear() { orders.clear(); laps.clear(); save() }
+    fun removeLastOrder() { if (orders.isNotEmpty()) { orders.removeAt(orders.size - 1); save() } }
+    fun removeLastLap() { if (laps.isNotEmpty()) { laps.removeAt(laps.size - 1); save() } }
     fun addLap(r: LapRecord) { laps.add(r); save() }
 
     private fun save() {

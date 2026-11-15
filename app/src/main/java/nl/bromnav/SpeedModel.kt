@@ -29,15 +29,24 @@ class SpeedModel(ctx: Context) {
     fun sampleCount(): Int = (0..bands.size).sumOf { samples(it).size }
 
     /** Record one finished leg. Ignores nonsense (GPS lost, long break). */
-    fun record(distM: Double, predictedS: Double, actualS: Double) {
-        if (distM < 300 || predictedS < 30) return
+    /** @return true if the sample was stored (so it can be undone) */
+    fun record(distM: Double, predictedS: Double, actualS: Double): Boolean {
+        if (distM < 300 || predictedS < 30) return false
         val f = actualS / predictedS
-        if (f < 0.5 || f > 3.0) return
+        if (f < 0.5 || f > 3.0) return false
         val b = band(distM)
         val s = samples(b); s.add(f)
         while (s.size > 30) s.removeAt(0)
         prefs.edit().putString("b$b", JSONArray(s).toString()).apply()
+        return true
     }
+
+    fun removeLast(distM: Double) {
+        val b = band(distM); val s = samples(b)
+        if (s.isNotEmpty()) { s.removeAt(s.size - 1); prefs.edit().putString("b$b", JSONArray(s).toString()).apply() }
+    }
+
+    fun clear() = prefs.edit().clear().apply()
 
     fun describe(): String = JSONObject().apply {
         for (b in 0..bands.size) put("band$b", "%.2f (%d)".format(factor(if (b == 0) 0.0 else if (b == 1) 2000.0 else 5000.0), samples(b).size))
