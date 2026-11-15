@@ -107,6 +107,13 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     // --- state
     private enum class Mode { PLAN, NAV }
+    /** app mode chosen at start: delivery (runs, receipts, stats) or simple single-destination navigation */
+    private var simple = false
+    private var simpleTarget: Stop? = null
+    private lateinit var searchHistory: SearchHistory
+    private lateinit var scanBtn: Button
+    private lateinit var listBtn: Button
+    private var chooser: AlertDialog? = null
     private var mode = Mode.PLAN
     private var listOpen = false
     private var lastFix: Location? = null
@@ -138,6 +145,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         store = RunStore(this)
         speed = SpeedModel(this)
         history = History(this)
+        searchHistory = SearchHistory(this)
         voice = VoiceGuide(this)
 
         val files = getExternalFilesDir(null)!!
@@ -151,6 +159,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         planner = Planner(engine!!, speed)
 
         buildUi(savedInstanceState, tiles)
+        if (savedInstanceState == null) showModeChooser()
         if (BuildConfig.DEBUG) DebugBridge.register(this)
         NoteTranslator.ensureModel(wifiOnly = true)
         requestLocation()
@@ -297,13 +306,21 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
         // icon row: 🔍  📋  [ main action ]  ☰   (centred)
         val icons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(10), 0, 0) }
-        icons.addView(iconBtn("📷") { openScanner() })
-        icons.addView(iconBtn("📋") { toggleList() })
+        scanBtn = iconBtn("📷") { if (simple) openSearch() else openScanner() }
+        listBtn = iconBtn("📋") { toggleList() }
+        icons.addView(scanBtn); icons.addView(listBtn)
         mainBtn = Button(this).apply {
             isAllCaps = false; textSize = 18f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
             background = card(Color.parseColor("#1f6fe5"), 28); elevation = dp(4).toFloat()
             layoutParams = LinearLayout.LayoutParams(dp(128), dp(52)).apply { setMargins(dp(4), 0, dp(4), 0) }
-            setOnClickListener { if (mode == Mode.PLAN) startRun() else delivered() }
+            setOnClickListener {
+                when {
+                    simple && mode == Mode.NAV -> endNav()
+                    simple -> if (simpleTarget != null) startSimple() else openSearch()
+                    mode == Mode.PLAN -> startRun()
+                    else -> delivered()
+                }
+            }
         }
         icons.addView(mainBtn)
         icons.addView(iconBtn("☰") { openMenu(it) })
@@ -352,7 +369,39 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     private fun toggleList() { listOpen = !listOpen; refreshAll() }
 
+    /** Asked at every app start: delivery mode or simple navigation. */
+    private fun showModeChooser() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(dp(24), dp(20), dp(24), dp(12)) }
+        fun big(t: String, sub: String, color: String, onClick: () -> Unit) = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; background = card(Color.parseColor(color), 20)
+            setPadding(dp(16), dp(18), dp(16), dp(18)); setOnClickListener { onClick() }
+            addView(tv(24f, "#ffffff", true).apply { text = t; gravity = Gravity.CENTER })
+            addView(tv(14f, "#e6eefc").apply { text = sub; gravity = Gravity.CENTER })
+        }
+        val pending = store.pending().size
+        box.addView(big("🛵  Delivery", if (pending > 0) "receipts, multi-stop runs, stats · $pending stop(s) waiting" else "receipts, multi-stop runs, stats", "#1f6fe5") { setAppMode(false) },
+            LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })
+        box.addView(big("🧭  Simple nav", "search an address and go · no stats", "#14335e") { setAppMode(true) }, LinearLayout.LayoutParams(-1, -2))
+        chooser = AlertDialog.Builder(this).setView(box).setCancelable(false).show()
+    }
+
+    private fun setAppMode(s: Boolean) {
+        chooser?.dismiss(); chooser = null
+        if (mode == Mode.NAV) endNav()
+        simple = s
+        if (!s) worker.execute { runCatching { planner!!.warm(store.pending(), store.nogos) } }
+        lastEtaCalc = 0; refreshAll()
+    }
+
+    /** Simple mode: navigate from here to [simpleTarget]; nothing is recorded. */
+    private fun startSimple() {
+        if (simpleTarget == null) return
+        mode = Mode.NAV
+        startLeg()
+    }
+
     private fun openMenu(anchor: View) {
+        if (simple) { openSimpleMenu(anchor); return }
         val pm = PopupMenu(this, anchor)
         pm.menu.add(0, 1, 0, "Type an address…")
         pm.menu.add(0, 9, 0, "📷 Scan receipts…")
@@ -363,6 +412,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             pm.menu.add(0, 5, 0, "End navigation")
         } else pm.menu.add(0, 6, 0, "Clear all stops")
         pm.menu.add(0, 7, 0, "Remove all avoid marks")
+        pm.menu.add(0, 10, 0, "🧭 Switch to simple nav")
         if (BuildConfig.DEBUG && mode == Mode.NAV) pm.menu.add(0, 8, 0, if (simulating) "Stop simulation" else "Simulate ride (debug)")
         pm.setOnMenuItemClickListener { item ->
             when (item.itemId) {
@@ -375,6 +425,29 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 6 -> confirmClear()
                 7 -> { store.nogos.clear(); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoid marks removed") }
                 8 -> if (simulating) stopSimulation() else simulate()
+                10 -> setAppMode(true)
+            }
+            true
+        }
+        pm.show()
+    }
+
+    private fun openSimpleMenu(anchor: View) {
+        val pm = PopupMenu(this, anchor)
+        pm.menu.add(0, 1, 0, "🔍 Search address…")
+        pm.menu.add(0, 3, 0, if (voice.enabled) "Voice: on (tap to mute)" else "Voice: off (tap to enable)")
+        if (mode == Mode.NAV) pm.menu.add(0, 5, 0, "End navigation")
+        pm.menu.add(0, 7, 0, "Remove all avoid marks")
+        pm.menu.add(0, 10, 0, "🛵 Switch to delivery mode")
+        if (BuildConfig.DEBUG && mode == Mode.NAV) pm.menu.add(0, 8, 0, if (simulating) "Stop simulation" else "Simulate ride (debug)")
+        pm.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                1 -> openSearch()
+                3 -> voice.enabled = !voice.enabled
+                5 -> endNav()
+                7 -> { store.nogos.clear(); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoid marks removed") }
+                8 -> if (simulating) stopSimulation() else simulate()
+                10 -> setAppMode(false)
             }
             true
         }
@@ -384,9 +457,17 @@ class MainActivity : AppCompatActivity(), LocationListener {
     // ------------------------------------------------------------------ search / stops
 
     private fun openSearch() {
-        AddressSearch.show(this) { a ->
-            addStop(Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, street = a.street, houseNo = a.houseNo))
+        AddressSearch.show(this, if (simple) "Where to?" else "Add stop", history = searchHistory.all()) { a ->
+            searchHistory.add(a)
+            val st = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, street = a.street, houseNo = a.houseNo)
+            if (simple) navigateTo(st) else addStop(st)
         }
+    }
+
+    /** Simple mode: (re)start navigation to a new destination. */
+    private fun navigateTo(st: Stop) {
+        simpleTarget = st
+        if (mode == Mode.NAV) startLeg() else startSimple()
     }
 
     private fun addStop(s: Stop, ask: Boolean = true) {
@@ -410,9 +491,9 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val earliestEt = field("Exact time: not before (HH:MM) — empty = ASAP", s.earliest?.let { hm(it) } ?: "", InputType.TYPE_CLASS_DATETIME or InputType.TYPE_DATETIME_VARIATION_TIME)
         var pay = s.payment
         val payBtn = Button(this).apply { isAllCaps = false; textSize = 15f }
-        fun showPay() { payBtn.text = "Payment: " + when (pay) { "online" -> "✅ paid online"; "cash" -> "💶 cash"; "card" -> "💳 PIN at the door"; else -> "unknown" } + "  (tap to change)" }
+        fun showPay() { payBtn.text = "Payment: " + when (pay) { "online" -> "✅ prepaid online"; "cash" -> "💶 cash"; else -> "unknown" } + "  (tap to change)" }
         showPay()
-        payBtn.setOnClickListener { pay = when (pay) { "online" -> "cash"; "cash" -> "card"; "card" -> ""; else -> "online" }; showPay() }
+        payBtn.setOnClickListener { pay = when (pay) { "online" -> "cash"; "cash" -> ""; else -> "online" }; showPay() }
         val phoneEt = field("Phone", s.phone, InputType.TYPE_CLASS_PHONE)
         val nameEt = field("Name (doorbell)", s.name, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PERSON_NAME)
         val noteEt = field("Message from customer", s.note, InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE).apply { maxLines = 4; textSize = 14f }
@@ -456,6 +537,16 @@ class MainActivity : AppCompatActivity(), LocationListener {
     }
 
     private fun onLongPress(p: LatLon) {
+        if (simple) {
+            AlertDialog.Builder(this).setItems(arrayOf("Navigate here", "Avoid here (not allowed for bromfiets)", "Remove avoid marks nearby")) { _, w ->
+                when (w) {
+                    0 -> navigateTo(Stop(System.currentTimeMillis(), "Pin %.5f, %.5f".format(Locale.US, p.lat, p.lon), p, street = "Pin", houseNo = "📍"))
+                    1 -> { store.nogos.add(NoGo(p, 15)); store.save(); refreshAll(); if (mode == Mode.NAV) reroute("Avoiding that spot") }
+                    2 -> { store.nogos.removeAll { Geo.dist(it.p, p) < 60 }; store.save(); refreshAll() }
+                }
+            }.show()
+            return
+        }
         val items = arrayOf("Add stop here", "Avoid here (not allowed for bromfiets)", "Remove avoid marks nearby")
         AlertDialog.Builder(this).setItems(items) { _, which ->
             when (which) {
@@ -508,7 +599,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private var resumeLeg: DoubleArray? = null
 
     private fun startLeg() {
-        legTarget = store.pending().firstOrNull()
+        legTarget = if (simple) simpleTarget else store.pending().firstOrNull()
         val target = legTarget?.pos ?: Config.RESTAURANT
         val from = here() ?: Config.RESTAURANT
         arrivedSaid = false; sideSaid = false; earlySaid = false; lastProgress = null
@@ -560,6 +651,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     }
 
     private fun delivered() {
+        if (simple) { endNav(); return }
         val t = legTarget
         val now = System.currentTimeMillis()
         if (t == null) {
@@ -642,6 +734,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     }
 
     private fun endNav() {
+        if (simple) simpleTarget = null
         mode = Mode.PLAN; navigator = null; legTarget = null; lastProgress = null
         store.stops.removeAll { it.delivered || it.cancelled }; store.save()
         banner.visibility = View.GONE
@@ -810,7 +903,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             if (pr.remainingM < 30 && !arrivedSaid) {
                 arrivedSaid = true
                 voice.say(t?.let { "You have arrived at ${spokenStop(it)}" + when (it.payment) {
-                    "cash" -> ". Collect cash payment."; "card" -> ". Card payment at the door."; else -> "" } }
+                    "cash" -> ". Collect cash payment."; else -> "" } }
                     ?: "You are back at ${Config.RESTAURANT_NAME}")
             }
             updateInfoCard()
@@ -900,8 +993,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     private fun updateInfoCard() {
         if (!::infoCard.isInitialized) return
-        val pending = store.pending()
-        val next = if (mode == Mode.NAV) legTarget else pending.firstOrNull()
+        val pending = if (simple) emptyList() else store.pending()
+        val next = if (simple) simpleTarget else if (mode == Mode.NAV) legTarget else pending.firstOrNull()
         val pr = lastProgress
         factorTv.text = "×%.2f".format(speed.factor(pr?.remainingM ?: 2000.0))
 
@@ -929,6 +1022,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 streetTv.text = Config.RESTAURANT_NAME; numberTv.text = "🏠"
                 detailTv.text = "All delivered — heading back" + (pr?.let { " · ${Navigator.fmtDist(it.remainingM)}" } ?: "")
             }
+            next == null && simple -> { streetTv.text = "Simple nav"; numberTv.text = "🧭"; detailTv.text = "Tap 🔍 to search an address (or long-press the map)" }
             next == null -> { streetTv.text = "No stops yet"; numberTv.text = ""; detailTv.text = "Tap 📷 to scan receipts (or ☰ → type an address)" }
             else -> {
                 streetTv.text = next.streetName(); numberTv.text = next.number()
@@ -961,6 +1055,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     private fun updateEtas() {
         lastEtaCalc = System.currentTimeMillis()
+        if (simple) return
         val pending = store.pending().toList()
         if (pending.isEmpty()) { etaByStop = emptyMap(); return }
         val nogos = store.nogos.toList()
@@ -1000,6 +1095,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     /** Stars for the most urgent pending order (the current one or a later one). */
     private fun updateStars() {
+        if (simple) return
         val pending = store.pending()
         val best = pending.mapNotNull { s -> starsOf(s)?.let { s to it } }.maxByOrNull { it.second }
         if (best == null) { starsTv.text = "☆☆☆☆☆"; starsTv.setTextColor(Color.parseColor("#bbbbbb")); return }
@@ -1013,13 +1109,20 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     private fun refreshAll() {
         if (!::infoCard.isInitialized) return
+        scanBtn.text = if (simple) "🔍" else "📷"
+        listBtn.visibility = if (simple) View.GONE else View.VISIBLE
+        starsTv.visibility = if (simple) View.GONE else View.VISIBLE
+        factorTv.visibility = if (simple) View.GONE else View.VISIBLE
+        if (simple) listOpen = false
         mainBtn.text = when {
+            simple && mode == Mode.NAV -> "End ■"
+            simple -> if (simpleTarget != null) "Go ▶" else "🔍 Where to?"
             mode == Mode.PLAN && store.pending().isEmpty() -> "📷 Scan"
             mode == Mode.PLAN -> "Go ▶"
             legTarget == null -> "Done ✓"
             else -> "Delivered ✓"
         }
-        mainBtn.background = card(Color.parseColor(if (mode == Mode.NAV) "#1e9e4a" else "#1f6fe5"), 28)
+        mainBtn.background = card(Color.parseColor(when { simple && mode == Mode.NAV -> "#6b7280"; mode == Mode.NAV -> "#1e9e4a"; else -> "#1f6fe5" }), 28)
         listCard.visibility = if (listOpen && (store.pending().isNotEmpty() || store.cancelled().isNotEmpty())) View.VISIBLE else View.GONE
         recenterBtn.visibility = if (listCard.visibility == View.VISIBLE) View.GONE else View.VISIBLE
         orderTv.text = if (store.manualOrder) "Order: MANUAL · tap here to auto-optimise" else "Order: automatic (fastest, deadlines first) · ▲▼ to change"
@@ -1053,6 +1156,12 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val f = ArrayList<String>()
         fun pt(p: LatLon, n: String, color: String) =
             """{"type":"Feature","geometry":{"type":"Point","coordinates":[${p.lon},${p.lat}]},"properties":{"n":"$n","color":"$color"}}"""
+        if (simple) {
+            simpleTarget?.let { f.add(pt(it.pos, "★", "#14335e")) }
+            setGeoJson("stops", """{"type":"FeatureCollection","features":[${f.joinToString(",")}]}""")
+            setGeoJson("nogos", """{"type":"FeatureCollection","features":[${store.nogos.joinToString(",") { pt(it.p, "", "#d93025") }}]}""")
+            return
+        }
         f.add(pt(Config.RESTAURANT, "W", "#202020"))
         store.pending().forEachIndexed { i, s -> f.add(pt(s.pos, "${i + 1}", String.format("#%06X", 0xFFFFFF and urgencyColor(s)))) }
         setGeoJson("stops", """{"type":"FeatureCollection","features":[${f.joinToString(",")}]}""")
@@ -1080,6 +1189,18 @@ class MainActivity : AppCompatActivity(), LocationListener {
     internal fun dbgClear() { if (mode == Mode.NAV) endNav(); store.stops.clear(); store.manualOrder = false; store.save(); refreshAll() }
     internal fun dbgMove(from: Int, to: Int) = moveStop(from - 1, to - 1)
     internal fun dbgAuto() = autoOrder()
+    internal fun dbgMode(m: String) = setAppMode(m == "simple")
+    internal fun dbgNavTo(q: String, done: (String) -> Unit) {
+        net.execute {
+            val a = runCatching { PdokGeocoder.search(q).firstOrNull() }.getOrNull()
+            ui.post {
+                if (a == null) { done("not found: $q"); return@post }
+                searchHistory.add(a)
+                navigateTo(Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, street = a.street, houseNo = a.houseNo))
+                done("navigating to ${a.label}")
+            }
+        }
+    }
 
     /** OCR a receipt image file (path relative to the app's external files dir), optionally add it. */
     internal fun dbgOcr(path: String, add: Boolean, done: (String) -> Unit) {
@@ -1141,6 +1262,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     internal fun dbgState(): org.json.JSONObject {
         val o = org.json.JSONObject()
+        o.put("appMode", if (simple) "simple" else "delivery").put("chooserOpen", chooser != null)
+            .put("searchHistory", org.json.JSONArray(searchHistory.all().take(5).map { it.label }))
         o.put("mode", mode.name).put("simulating", simulating).put("listOpen", listOpen).put("manualOrder", store.manualOrder)
         o.put("legTarget", legTarget?.label ?: if (mode == Mode.NAV) Config.RESTAURANT_NAME else null)
         o.put("speedFactor2km", speed.factor(2000.0)).put("speedSamples", speed.sampleCount())

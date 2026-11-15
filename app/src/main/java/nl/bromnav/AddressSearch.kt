@@ -19,7 +19,9 @@ import java.util.concurrent.Executors
 object AddressSearch {
     private val net = Executors.newSingleThreadExecutor()
 
-    fun show(a: Activity, title: String = "Add stop", initial: String = "", onPick: (PdokGeocoder.Address) -> Unit) {
+    /** [history]: recent addresses, listed (🕘) while the search field is empty. */
+    fun show(a: Activity, title: String = "Add stop", initial: String = "", history: List<PdokGeocoder.Address> = emptyList(),
+             onPick: (PdokGeocoder.Address) -> Unit) {
         val ui = Handler(Looper.getMainLooper())
         val dp = a.resources.displayMetrics.density
         val box = LinearLayout(a).apply { orientation = LinearLayout.VERTICAL; setPadding((16 * dp).toInt(), (8 * dp).toInt(), (16 * dp).toInt(), 0) }
@@ -29,12 +31,18 @@ object AddressSearch {
         val lv = ListView(a).apply { adapter = la }
         box.addView(et); box.addView(lv, LinearLayout.LayoutParams(-1, (320 * dp).toInt()))
         val dlg = AlertDialog.Builder(a).setTitle(title).setView(box).setNegativeButton("Close", null).create()
+        fun showHistory() {
+            results.clear(); results.addAll(history)
+            la.clear(); la.addAll(history.map { "🕘 " + it.label.removeSuffix(" Groningen") }); la.notifyDataSetChanged()
+        }
+        showHistory()
         var seq = 0
         et.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, x: Int, y: Int, z: Int) {}
             override fun onTextChanged(s: CharSequence?, x: Int, y: Int, z: Int) {}
             override fun afterTextChanged(s: Editable?) {
                 val q = s?.toString()?.trim() ?: ""; val my = ++seq
+                if (q.isEmpty()) { showHistory(); return }
                 if (q.length < 3) return
                 ui.postDelayed({
                     if (my != seq) return@postDelayed

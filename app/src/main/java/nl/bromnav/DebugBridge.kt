@@ -12,7 +12,7 @@ import androidx.core.content.ContextCompat
  *
  *   adb shell am broadcast -a nl.bromnav.DBG --es cmd state
  *   adb shell am broadcast -a nl.bromnav.DBG --es cmd add --es q "Vismarkt 10" --es order 1201 --es due 02:30
- *   cmd = clear | add | move (--es from N --es to M, 1-based) | auto | undo | translate (--es text T) | ocr (--es path P [--es add 1]) | cancel (--es n N) | restore (--es n N) | go | resetstats | sim | simstop | delivered | skip | end | list | nolist | state
+ *   cmd = clear | add | move (--es from N --es to M, 1-based) | auto | undo | mode (--es m simple|delivery) | navto (--es q Q) | translate (--es text T) | ocr (--es path P [--es add 1]) | cancel (--es n N) | restore (--es n N) | go | resetstats | sim | simstop | delivered | skip | end | list | nolist | state
  *
  * Every command answers with "<cmd> -> <result/state JSON>" in logcat (tag BromNavDbg) and in
  * <external files>/dbg_reply.txt.
@@ -41,6 +41,8 @@ object DebugBridge {
                         "move" -> { a.dbgMove(i.getStringExtra("from")!!.toInt(), i.getStringExtra("to")!!.toInt()); reply("ok") }
                         "auto" -> { a.dbgAuto(); reply("ok") }
                         "undo" -> reply(a.dbgUndo())
+                        "mode" -> { a.dbgMode(i.getStringExtra("m") ?: "delivery"); reply("ok") }
+                        "navto" -> a.dbgNavTo(i.getStringExtra("q") ?: "", reply)
                         "translate" -> {
                             val t = i.getStringExtra("text") ?: ""
                             NoteTranslator.ensureModel(wifiOnly = true) {

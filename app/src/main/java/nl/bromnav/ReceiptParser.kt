@@ -37,7 +37,7 @@ object ReceiptParser {
         val asap: Boolean,             // requested "ZSM"/"ASAP"
         val note: String?,             // courier note ("Voor bezorger: ...")
         val requestedTime: String? = null, // "(req.: 17:30)": customer asked for an exact time -> not earlier
-        val payment: String? = null,   // "online" | "cash" | "card"
+        val payment: String? = null,   // "online" | "cash"
     ) {
         val hasAddress get() = postcode != null && houseNo != null
         /** key used to decide that two scans read the same address */
@@ -172,18 +172,17 @@ object ReceiptParser {
             if (requestedTime != null) break
         }
 
-        // payment: "Betaalwijze: Online betaald" / "Payment: Online paid" / Contant / Pin
+        // payment: "Betaalwijze: Online betaald" / "Payment: Online paid" / Contant
         fun classify(v: String): String? = when {
             Regex("""(online|betaald|paid|ideal|prepaid|vooraf)""", RegexOption.IGNORE_CASE).containsMatchIn(v) -> "online"
             Regex("""(contant|cash)""", RegexOption.IGNORE_CASE).containsMatchIn(v) -> "cash"
-            Regex("""(\bpin\b|pinnen|card|kaart)""", RegexOption.IGNORE_CASE).containsMatchIn(v) -> "card"
-            else -> null
+            else -> null   // Wabi-Sabi only has prepaid online or cash
         }
         var payment: String? = null
         val payLabel = ls.indexOfFirst { LBL_PAY.containsMatchIn(it.text) }
         if (payLabel >= 0) payment = valueFor(ls, payLabel, LBL_PAY)?.let { classify(it) }
         if (payment == null) payment = ls.firstNotNullOfOrNull { l ->
-            if (Regex("""^(online\s+(betaald|paid)|contant|cash|pinnen)\b""", RegexOption.IGNORE_CASE).containsMatchIn(l.text)) classify(l.text) else null
+            if (Regex("""^(online\s+(betaald|paid)|contant|cash)\b""", RegexOption.IGNORE_CASE).containsMatchIn(l.text)) classify(l.text) else null
         }
 
         // --- order number

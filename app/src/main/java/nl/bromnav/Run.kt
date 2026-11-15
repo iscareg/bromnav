@@ -23,10 +23,10 @@ data class Stop(
     var name: String = "",
     /** exact-time order: do not arrive before this (epoch ms); null = ASAP */
     var earliest: Long? = null,
-    /** "online" | "cash" | "card" | "" */
+    /** "online" (prepaid) | "cash" | "" (unknown) */
     var payment: String = "",
 ) {
-    fun paymentIcon() = when (payment) { "online" -> "✅ paid"; "cash" -> "💶 CASH"; "card" -> "💳 PIN"; else -> "" }
+    fun paymentIcon() = when (payment) { "online" -> "✅ paid"; "cash" -> "💶 CASH"; else -> "" }
 
     /** street / number, parsed from the label if PDOK fields are missing (e.g. old data) */
     fun streetName() = street.ifEmpty { Regex("""^(.*?)\s+\d""").find(label)?.groupValues?.get(1) ?: label }

@@ -344,7 +344,7 @@ class ScanActivity : AppCompatActivity() {
             else -> t
         } }
         line(timeTv, time.locked != null, "Time", timeText, time.best?.let { "$it  (${time.bestCount}/${time.need})" })
-        val payIcon = when (pay.locked ?: pay.best) { "online" -> "  ·  ✅ paid"; "cash" -> "  ·  💶 CASH"; "card" -> "  ·  💳 PIN"; else -> "" }
+        val payIcon = when (pay.locked ?: pay.best) { "online" -> "  ·  ✅ paid"; "cash" -> "  ·  💶 CASH"; else -> "" }
         line(orderTv, order.locked != null, "Order", order.locked?.let { "#$it$payIcon" }, order.best?.let { "#$it  (${order.bestCount}/${order.need})$payIcon" })
         val n = note.locked
         noteTv.visibility = if (n != null || bestNote != null) View.VISIBLE else View.GONE
