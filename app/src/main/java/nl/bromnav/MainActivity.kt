@@ -59,6 +59,8 @@ import java.util.concurrent.Executors
 class MainActivity : AppCompatActivity(), LocationListener {
 
     companion object {
+        /** map zoom when not navigating: between tile levels, so labels don't blink at z15 */
+        private const val PLAN_ZOOM = 15.5
         /** the place index (~8 s to load on a slow phone) is kept for the whole process */
         @Volatile private var poiCache: PoiIndex? = null
     }
@@ -116,7 +118,10 @@ class MainActivity : AppCompatActivity(), LocationListener {
     /** app mode chosen at start: delivery (runs, receipts, stats) or simple single-destination navigation */
     private var simple = false
     private var simpleTarget: Stop? = null
-    private lateinit var searchHistory: SearchHistory
+    /** separate recent searches for simple nav (places) and delivery (addresses) */
+    private lateinit var simpleHistory: SearchHistory
+    private lateinit var deliveryHistory: SearchHistory
+    private val searchHistory get() = if (simple) simpleHistory else deliveryHistory
     private lateinit var scanBtn: Button
     private lateinit var listBtn: Button
     private var chooser: AlertDialog? = null
@@ -164,7 +169,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
         store = RunStore(this)
         speed = SpeedModel(this)
         history = History(this)
-        searchHistory = SearchHistory(this)
+        simpleHistory = SearchHistory(this)                       // (the old shared list stays with simple nav)
+        deliveryHistory = SearchHistory(this, "search_history_delivery")
         voice = VoiceGuide(this)
 
         val files = getExternalFilesDir(null)!!
@@ -468,7 +474,10 @@ class MainActivity : AppCompatActivity(), LocationListener {
     }
 
     private fun showRestaurant() {
-        map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(Config.RESTAURANT.lat, Config.RESTAURANT.lon), 14.0))
+        // start where you are if the phone knows it, else at the restaurant (no zoom animation at start)
+        val p = here() ?: Config.RESTAURANT
+        map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(p.lat, p.lon), if (here() != null) PLAN_ZOOM else 14.5))
+        if (here() != null) centeredOnMe = true
     }
 
     private val scanLauncher = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { res ->
@@ -1163,7 +1172,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         }
         if (!fromSim && !centeredOnMe && mode == Mode.PLAN && map != null) {
             centeredOnMe = true
-            map?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 15.0), 800)
+            map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), PLAN_ZOOM))
         }
         if (isGps(loc)) {
             if (loc.accuracy < 25) {
@@ -1233,7 +1242,16 @@ class MainActivity : AppCompatActivity(), LocationListener {
         if (navStyle) {
             b.zoom(speedZoom(loc)).tilt(40.0)
             b.padding(0.0, mapView!!.height * 0.30, 0.0, 0.0)
-        } else b.zoom(maxOf(m.cameraPosition.zoom, 15.0))
+        } else {
+            val cam = m.cameraPosition
+            val z = if (cam.zoom < PLAN_ZOOM - 0.05) PLAN_ZOOM else cam.zoom
+            // standing / slow: keep the map still. New camera only when you clearly moved, not for
+            // every small GPS/Wi-Fi wobble (each animation re-places all labels -> blinking names)
+            val moved = cam.target?.let { Geo.dist(LatLon(it.latitude, it.longitude), LatLon(loc.latitude, loc.longitude)) } ?: 1e9
+            val turn = heading?.let { Math.abs(((it - cam.bearing + 540) % 360) - 180) } ?: 0.0
+            if (moved < maxOf(6.0, loc.accuracy / 2.0) && Math.abs(z - cam.zoom) < 0.05 && turn < 8) return
+            b.zoom(z)
+        }
         m.animateCamera(CameraUpdateFactory.newCameraPosition(b.build()), 800)
     }
 

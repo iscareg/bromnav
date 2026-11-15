@@ -4,9 +4,9 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Recently chosen addresses (most recent first), shown in the search dialog before typing. */
-class SearchHistory(ctx: Context) {
-    private val prefs = ctx.getSharedPreferences("search_history", Context.MODE_PRIVATE)
+/** Recently chosen addresses (most recent first), shown in the search dialog before typing. One per app mode. */
+class SearchHistory(ctx: Context, name: String = "search_history") {
+    private val prefs = ctx.getSharedPreferences(name, Context.MODE_PRIVATE)
     private val max = 15
 
     fun all(): List<PdokGeocoder.Address> {
