@@ -13,6 +13,12 @@ val copyMapData = tasks.register<Sync>("copyMapData") {
     into(layout.buildDirectory.dir("mapassets"))
 }
 
+// Place search index (all builds; ~0.5 MB): data/pois.tsv.gz from tools/build_pois.py
+val copyPoiData = tasks.register<Sync>("copyPoiData") {
+    from(rootProject.file("data")) { include("pois.tsv.gz") }
+    into(layout.buildDirectory.dir("poiassets"))
+}
+
 android {
     namespace = "nl.bromnav"
     compileSdk = 35
@@ -20,8 +26,8 @@ android {
         applicationId = "nl.bromnav"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
         ndk { abiFilters += listOf("arm64-v8a") }
     }
     // Release signing key lives outside the repo (~/.bromnav-release/signing.properties).
@@ -39,7 +45,8 @@ android {
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
-    sourceSets.getByName("release").assets.srcDir(copyMapData)   // task output -> implicit dependencies
+    sourceSets.getByName("release").assets.srcDir(layout.buildDirectory.dir("mapassets"))
+    sourceSets.getByName("main").assets.srcDir(layout.buildDirectory.dir("poiassets"))
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -63,3 +70,10 @@ dependencies {
     implementation("androidx.camera:camera-view:1.4.2")
     testImplementation("junit:junit:4.13.2")
 }
+
+// every task that reads assets (merge, lint) must run after the copies
+tasks.matching { Regex("merge\\w*Assets|generate\\w*LintVitalReportModel|lintVital\\w*|lintAnalyze\\w*").matches(it.name) }.configureEach {
+    dependsOn(copyPoiData)
+    if (name.contains("Release")) dependsOn(copyMapData)
+}
+

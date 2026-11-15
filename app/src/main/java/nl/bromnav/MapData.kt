@@ -19,6 +19,49 @@ object MapData {
     const val MIN_LON = 6.15; const val MIN_LAT = 52.95; const val MAX_LON = 7.25; const val MAX_LAT = 53.55
     const val MAX_ZOOM = 15
 
+    const val POIS_NAME = "pois.tsv.gz"
+    fun poisFile(ctx: Context) = File(ctx.getExternalFilesDir(null), POIS_NAME)
+
+    /** Place search index: downloaded copy if present, else the one bundled in the APK. */
+    @Volatile var poiError: String? = null
+    fun openPois(ctx: Context): PoiIndex? = runCatching {
+        val f = poisFile(ctx)
+        if (f.exists()) f.inputStream().use { PoiIndex.load(it) }
+        else (runCatching { ctx.assets.open(POIS_NAME) }.getOrNull() ?: ctx.assets.open(POIS_NAME.removeSuffix(".gz"))).use { PoiIndex.load(it) }
+    }.onFailure { poiError = it.toString() }.getOrNull()
+
+    /** Named places (shops, restaurants, landmarks...) from OpenStreetMap via Overpass; same format as tools/build_pois.py. */
+    fun downloadPois(ctx: Context, progress: (Double, String) -> Unit) {
+        progress(0.0, "Downloading places from OpenStreetMap…")
+        val b = "$MIN_LAT,$MIN_LON,$MAX_LAT,$MAX_LON"
+        val keys = listOf("amenity", "shop", "tourism", "leisure", "office", "craft", "historic", "healthcare")
+        val q = "[out:json][timeout:180];(" + keys.joinToString("") { "nwr[name][$it]($b);" } +
+            "nwr[name][railway=station]($b);nwr[name][place~\"^(neighbourhood|suburb|quarter|village|hamlet|square|town|city)$\"]($b););out center tags;"
+        val c = URL("https://overpass-api.de/api/interpreter").openConnection() as HttpURLConnection
+        c.connectTimeout = 20000; c.readTimeout = 300_000; c.doOutput = true
+        c.setRequestProperty("User-Agent", "BromNav")
+        c.outputStream.use { it.write(("data=" + java.net.URLEncoder.encode(q, "UTF-8")).toByteArray()) }
+        val json = try { c.inputStream.bufferedReader().readText() } finally { c.disconnect() }
+        progress(0.7, "Indexing places…")
+        val els = org.json.JSONObject(json).getJSONArray("elements")
+        val tmp = File(poisFile(ctx).path + ".new")
+        java.util.zip.GZIPOutputStream(tmp.outputStream()).bufferedWriter().use { w ->
+            for (i in 0 until els.length()) {
+                val e = els.getJSONObject(i); val t = e.optJSONObject("tags") ?: continue
+                val name = t.optString("name"); if (name.isEmpty()) continue
+                val lat = if (e.has("lat")) e.getDouble("lat") else e.optJSONObject("center")?.getDouble("lat") ?: continue
+                val lon = if (e.has("lon")) e.getDouble("lon") else e.optJSONObject("center")?.getDouble("lon") ?: continue
+                val key = (keys + listOf("railway", "place")).firstOrNull { t.has(it) } ?: ""
+                val alt = listOf("alt_name", "old_name", "short_name", "official_name", "brand").mapNotNull { t.optString(it).takeIf { v -> v.isNotEmpty() } }.joinToString(";")
+                val f = listOf(name, key, t.optString(key), t.optString("cuisine"), alt, t.optString("addr:street"), t.optString("addr:housenumber"),
+                    t.optString("addr:postcode"), t.optString("addr:city"), "%.6f".format(java.util.Locale.US, lat), "%.6f".format(java.util.Locale.US, lon))
+                w.write(f.joinToString("\t") { it.replace('\t', ' ').replace('\n', ' ') }); w.write("\n")
+            }
+        }
+        tmp.renameTo(poisFile(ctx))
+        progress(1.0, "${els.length()} places indexed")
+    }
+
     fun segDir(ctx: Context) = File(ctx.getExternalFilesDir(null), "segments").apply { mkdirs() }
     fun tilesFile(ctx: Context) = File(ctx.getExternalFilesDir(null), "tiles/$TILES_NAME").apply { parentFile?.mkdirs() }
 

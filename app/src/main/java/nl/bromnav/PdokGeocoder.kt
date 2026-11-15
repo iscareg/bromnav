@@ -61,3 +61,26 @@ object PdokGeocoder {
         return LatLon(m.groupValues[2].toDouble(), m.groupValues[1].toDouble())
     }
 }
+
+/** OSM name search (komoot Photon), online fallback for places outside the local index. */
+object PhotonGeocoder {
+    fun search(q: String, near: LatLon, limit: Int = 5): List<PdokGeocoder.Address> {
+        val url = "https://photon.komoot.io/api/?q=${URLEncoder.encode(q, "UTF-8")}&limit=$limit&lat=${near.lat}&lon=${near.lon}" +
+            "&bbox=${MapData.MIN_LON},${MapData.MIN_LAT},${MapData.MAX_LON},${MapData.MAX_LAT}"
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 6000; c.readTimeout = 6000; c.setRequestProperty("User-Agent", "BromNav/0.3")
+        try {
+            val fs = JSONObject(c.inputStream.bufferedReader().readText()).getJSONArray("features")
+            return (0 until fs.length()).mapNotNull { i ->
+                val f = fs.getJSONObject(i); val p = f.getJSONObject("properties")
+                val co = f.getJSONObject("geometry").getJSONArray("coordinates")
+                val name = p.optString("name").ifEmpty { return@mapNotNull null }
+                val street = p.optString("street"); val hn = p.optString("housenumber")
+                val label = "🌐 $name" + listOf(listOf(street, hn).filter { it.isNotEmpty() }.joinToString(" "), p.optString("city"))
+                    .filter { it.isNotEmpty() }.joinToString(", ").let { if (it.isNotEmpty()) " · $it" else "" }
+                PdokGeocoder.Address(label, LatLon(co.getDouble(1), co.getDouble(0)), name, hn)
+            }
+        } finally { c.disconnect() }
+    }
+}
+

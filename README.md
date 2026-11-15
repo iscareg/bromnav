@@ -11,7 +11,16 @@ Groningen area, so it works without a PC and without mobile data.
 
 **Two modes, chosen at start**
 - 🛵 **Delivery**: receipts, multi-stop runs, urgency, stats.
-- 🧭 **Simple nav**: search an address (with recent searches) and go. No stats are recorded.
+- 🧭 **Simple nav**: search a place or an address (with recent searches) and go. No stats are recorded.
+
+**Place search**
+- An offline index of about 18,000 named places from OpenStreetMap: shops, restaurants, cafés,
+  landmarks, schools, stations and neighbourhoods. It is bundled in the app and refreshed with
+  "Update maps".
+- Smart local search as you type: accent-insensitive, word prefixes ("alb hei"), typo-tolerant
+  ("martinitorn"), category words in Dutch and English ("pizza", "apotheek", "supermarkt",
+  "tankstation"), ranked by match quality and distance.
+- Mixed with Dutch addresses (PDOK/BAG) and online OSM name search (Photon) for anything else.
 
 **Legal moped routing (offline)**
 - Embedded [BRouter](https://github.com/abrensch/brouter) with a custom profile
@@ -69,9 +78,10 @@ them with `tools/push_data.sh`.
 
 ### Offline data
 
-`tools/update_data.sh` downloads the BRouter segment (`data/segments/E5_N50.rd5`) and cuts the
-area out of the Protomaps build (`data/tiles/groningen.pmtiles`, needs the
-[`pmtiles`](https://github.com/protomaps/go-pmtiles) CLI in `tools/vendor/`). The area and the
+`tools/update_data.sh` downloads the BRouter segment (`data/segments/E5_N50.rd5`), cuts the area
+out of the Protomaps build (`data/tiles/groningen.pmtiles`, needs the
+[`pmtiles`](https://github.com/protomaps/go-pmtiles) CLI in `tools/vendor/`), and builds the place
+index (`data/pois.tsv.gz`, `tools/build_pois.py`, via Overpass). The area and the
 segments are configured in `MapData.kt` and the script.
 
 ### Releases
@@ -102,7 +112,8 @@ tags the version, and publishes a GitHub release (needs the `gh` CLI). The signi
 | `GpsFilter.kt` | location smoothing |
 | `MapData.kt`, `PmtilesExtract.kt` | bundled/downloaded offline data; PMTiles cut-out over HTTP |
 | `MapStyle.kt`, `Pal.kt` | light/dark map style and UI palette |
-| `PdokGeocoder.kt`, `AddressSearch.kt`, `SearchHistory.kt` | Dutch address search |
+| `PdokGeocoder.kt`, `AddressSearch.kt`, `SearchHistory.kt` | address + place search dialog (PDOK, Photon) |
+| `PoiIndex.kt` | offline smart place search (OSM) |
 | `SpeedModel.kt`, `History.kt`, `StatsActivity.kt` | speed multiplier, stats |
 | `DebugBridge.kt` | debug-only remote control used by `tools/dbg.sh` |
 

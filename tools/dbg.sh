@@ -16,6 +16,7 @@ if [ "$cmd" = cancel ] || [ "$cmd" = restore ]; then args+=(--es n "$1"); fi
 if [ "$cmd" = ocr ]; then args+=(--es path "$1"); [ "$2" = add ] && args+=(--es add 1); fi
 if [ "$cmd" = translate ]; then args+=(--es text "'$1'"); fi
 if [ "$cmd" = mode ]; then args+=(--es m "$1"); fi
+if [ "$cmd" = search ]; then args+=(--es q "'$1'"); fi
 if [ "$cmd" = navto ]; then args+=(--es q "'$1'"); fi
 if [ "$cmd" = add ]; then
   args+=(--es q "'$1'"); [ -n "$2" ] && args+=(--es order "$2"); [ -n "$3" ] && args+=(--es due "$3")

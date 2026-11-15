@@ -41,6 +41,7 @@ object DebugBridge {
                         "move" -> { a.dbgMove(i.getStringExtra("from")!!.toInt(), i.getStringExtra("to")!!.toInt()); reply("ok") }
                         "auto" -> { a.dbgAuto(); reply("ok") }
                         "undo" -> reply(a.dbgUndo())
+                        "search" -> reply(a.dbgSearch(i.getStringExtra("q") ?: ""))
                         "mode" -> { a.dbgMode(i.getStringExtra("m") ?: "delivery"); reply("ok") }
                         "navto" -> a.dbgNavTo(i.getStringExtra("q") ?: "", reply)
                         "translate" -> {

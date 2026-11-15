@@ -69,6 +69,8 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private lateinit var history: History
     private lateinit var voice: VoiceGuide
     private var engine: BRouterEngine? = null
+    @Volatile private var pois: PoiIndex? = null
+    @Volatile private var poisLoadMs = 0L
     private var planner: Planner? = null
 
     private var mapView: MapView? = null
@@ -155,6 +157,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         if (!MapData.haveData(this)) { showSetup(files); return }
 
         engine = BRouterEngine(segDir, installProfiles())
+        Thread { val t0 = System.currentTimeMillis(); pois = MapData.openPois(this); poisLoadMs = System.currentTimeMillis() - t0 }.start()
         planner = Planner(engine!!, speed)
 
         buildUi(savedInstanceState, tiles)
@@ -221,12 +224,13 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val cm = getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
         val metered = cm.isActiveNetworkMetered
         AlertDialog.Builder(this).setTitle("Update maps from internet")
-            .setMessage("Downloads the newest routing data (~180 MB, brouter.de) and map (~90 MB, Protomaps / OpenStreetMap)." +
+            .setMessage("Downloads the newest routing data (~180 MB, brouter.de), map (~90 MB, Protomaps) and places (~7 MB, OpenStreetMap)." +
                 if (metered) "\n\n⚠ You are on mobile data." else "\n\nYou are on Wi-Fi.")
             .setPositiveButton("Download") { _, _ ->
                 runMapJob("Updating maps", restart) { p ->
-                    MapData.downloadRouting(this) { f, m -> p(f * 0.6, m) }
-                    MapData.downloadMap(this) { f, m -> p(0.6 + f * 0.4, m) }
+                    MapData.downloadRouting(this) { f, m -> p(f * 0.55, m) }
+                    MapData.downloadMap(this) { f, m -> p(0.55 + f * 0.35, m) }
+                    MapData.downloadPois(this) { f, m -> p(0.9 + f * 0.1, m) }
                 }
             }
             .setNegativeButton("Cancel", null).show()
@@ -534,9 +538,14 @@ class MainActivity : AppCompatActivity(), LocationListener {
     // ------------------------------------------------------------------ search / stops
 
     private fun openSearch() {
-        AddressSearch.show(this, if (simple) "Where to?" else "Add stop", history = searchHistory.all()) { a ->
+        AddressSearch.show(this, if (simple) "Where to?" else "Add stop", history = searchHistory.all(),
+            pois = pois, near = here() ?: Config.RESTAURANT) { a0 ->
+            // drop the distance ("· 990 m") so history entries don't show stale distances
+            val a = a0.copy(label = a0.label.replace(Regex("""\s·\s[\d.,]+\s(m|km)$"""), ""))
             searchHistory.add(a)
-            val st = Stop(System.currentTimeMillis(), a.label.removeSuffix(" Groningen"), a.pos, street = a.street, houseNo = a.houseNo)
+            // places get a clean label "Name · Street 12" (without icon / distance)
+            val label = a.label.replace(Regex("""^\S+ (?=.)"""), "").substringBeforeLast(" · ").takeIf { a.label.contains(" · ") } ?: a.label.removeSuffix(" Groningen")
+            val st = Stop(System.currentTimeMillis(), label, a.pos, street = a.street, houseNo = a.houseNo)
             if (simple) navigateTo(st) else addStop(st)
         }
     }
@@ -1112,7 +1121,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 streetTv.text = Config.RESTAURANT_NAME; numberTv.text = "🏠"
                 detailTv.text = "All delivered — heading back" + (pr?.let { " · ${Navigator.fmtDist(it.remainingM)}" } ?: "")
             }
-            next == null && simple -> { streetTv.text = "Simple nav"; numberTv.text = "🧭"; detailTv.text = "Tap 🔍 to search an address (or long-press the map)" }
+            next == null && simple -> { streetTv.text = "Simple nav"; numberTv.text = "🧭"; detailTv.text = "Tap 🔍 to search a place or address (or long-press the map)" }
             next == null -> { streetTv.text = "No stops yet"; numberTv.text = ""; detailTv.text = "Tap 📷 to scan receipts (or ☰ → type an address)" }
             else -> {
                 streetTv.text = next.streetName(); numberTv.text = next.number()
@@ -1206,7 +1215,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         if (simple) listOpen = false
         mainBtn.text = when {
             simple && mode == Mode.NAV -> "End ■"
-            simple -> if (simpleTarget != null) "Go ▶" else "🔍 Where to?"
+            simple -> if (simpleTarget != null) "Go ▶" else "Where to?"
             mode == Mode.PLAN && store.pending().isEmpty() -> "📷 Scan"
             mode == Mode.PLAN -> "Go ▶"
             legTarget == null -> "Done ✓"
@@ -1280,6 +1289,13 @@ class MainActivity : AppCompatActivity(), LocationListener {
     internal fun dbgMove(from: Int, to: Int) = moveStop(from - 1, to - 1)
     internal fun dbgAuto() = autoOrder()
     internal fun dbgMode(m: String) = setAppMode(m == "simple")
+    internal fun dbgSearch(q: String): String {
+        val idx = pois ?: return "places not loaded yet ${MapData.poiError ?: ""}"
+        val t0 = System.nanoTime()
+        val r = idx.search(q, here() ?: Config.RESTAURANT, 5)
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        return "${ms} ms (index loaded in $poisLoadMs ms): " + r.joinToString(" | ") { "${it.poi.icon} ${it.poi.name} (${(it.distM / 100).toInt() / 10.0} km)" }
+    }
     internal fun dbgNavTo(q: String, done: (String) -> Unit) {
         net.execute {
             val a = runCatching { PdokGeocoder.search(q).firstOrNull() }.getOrNull()
