@@ -632,6 +632,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private fun startSimple() {
         if (simpleTarget == null) return
         mode = Mode.NAV
+        startTrip()
         startLeg()
     }
 
@@ -807,8 +808,27 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     /** Simple mode: (re)start navigation to a new destination. */
     private fun navigateTo(st: Stop) {
+        if (mode == Mode.NAV) finishTrip(arrived = false)          // a new destination ends the current trip
         simpleTarget = st
-        if (mode == Mode.NAV) startLeg() else startSimple()
+        if (mode == Mode.NAV) { startTrip(); startLeg() } else startSimple()
+    }
+
+    // ---- simple-navigation trips (Stats → Simple navigation)
+    private var tripStartMs = 0L
+    private var tripFrom: LatLon? = null
+    private var tripOdoM = 0.0
+
+    private fun startTrip() { tripStartMs = System.currentTimeMillis(); tripFrom = here(); tripOdoM = 0.0 }
+
+    private fun finishTrip(arrived: Boolean) {
+        val start = tripStartMs; val from = tripFrom ?: here(); val to = simpleTarget
+        tripStartMs = 0
+        if (!simple || start == 0L || from == null || to == null) return
+        val end = here() ?: to.pos
+        // GPS odometer; without enough GPS the distance along the route that was ridden
+        val dist = if (tripOdoM > 100) tripOdoM else (legDistM - (lastProgress?.remainingM ?: legDistM)).coerceAtLeast(Geo.dist(from, end))
+        val fromLabel = PdokGeocoder.book?.nearest(from) ?: "%.4f, %.4f".format(Locale.US, from.lat, from.lon)
+        history.addTrip(TripRecord(start, System.currentTimeMillis(), fromLabel, from, to.label, to.pos, dist, arrived))
     }
 
     private fun addStop(s: Stop, ask: Boolean = true) {
@@ -1114,7 +1134,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     }
 
     private fun endNav() {
-        if (simple) simpleTarget = null
+        if (simple) { finishTrip(arrived = false); simpleTarget = null }
         mode = Mode.PLAN; navigator = null; legTarget = null; lastProgress = null; legSeq++
         store.stops.removeAll { it.delivered || it.cancelled }; store.save()
         banner.visibility = View.GONE
@@ -1251,7 +1271,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         }
         if (isGps(loc)) {
             if (loc.accuracy < 25) {
-                odoFix?.let { o -> val d = o.distanceTo(loc); if (d > 3 && d < 200) { legOdoM += d; lapOdoM += d } }
+                odoFix?.let { o -> val d = o.distanceTo(loc); if (d > 3 && d < 200) { legOdoM += d; lapOdoM += d; tripOdoM += d } }
                 odoFix = loc
             }
         }
@@ -1280,6 +1300,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
                     voice.say("You are ${(e - arrive) / 60_000} minutes early. ${spokenStop(t)} is for ${hm(e)}, not earlier.")
                 }
             }
+            if (pr.remainingM < 30 && !arrivedSaid && simple) finishTrip(arrived = true)
             if (pr.remainingM < 30 && !arrivedSaid) {
                 arrivedSaid = true
                 voice.say(t?.let { "You have arrived at ${spokenStop(it)}" + when (it.payment) {

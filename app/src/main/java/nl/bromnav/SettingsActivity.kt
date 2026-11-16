@@ -68,7 +68,7 @@ class SettingsActivity : AppCompatActivity() {
         section("Delivery")
         row("🔀", "Auto order priority", OrderMode.current.label) { chooseOrderMode() }
         row("", "Vehicle", Vehicle.current.label, Ui.vehicleIcon(this, Vehicle.current, 26, Ui.toneFg(Ui.Tone.BLUE))) { chooseVehicle() }
-        row("📊", "Stats & history", "Laps, time per order, your speed") { startActivity(Intent(this, StatsActivity::class.java)) }
+        row("📊", "Stats & history", "Deliveries and simple-navigation trips") { startActivity(Intent(this, StatsActivity::class.java).putExtra(StatsActivity.EXTRA_SIMPLE, simple)) }
 
         section("Roads & map")
         row("✏", "Edit road access", "Tap a road on the map to allow or forbid it") { finishWith("edit_roads") }

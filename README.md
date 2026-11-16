@@ -54,6 +54,9 @@ Groningen area, so it works without a PC and without mobile data.
 - **ASAP orders** keep a safety margin before their promised time. **Exact-time orders**
   ("req.: 17:30") are never delivered early; arriving after the requested time is penalised, with
   a hard limit of +10 min.
+- **Stats** (Settings → Stats & history): Delivery tab (KPI tiles, charts, laps, orders) and Simple
+  navigation tab (trips, average speed and trip, most visited addresses, and "runs": the same
+  start → finish ridden more than 3 times, with best / average time and a chart of every run).
 - **Settings** (☰ → ⚙): a full screen with sections (Delivery, Roads & map, App). The ☰ menu on
   the map only has voice, clear all stops, the road access layer, and skip/end while navigating.
 - **Auto order priority** (Settings): shortest total route / hottest orders first (least time left,
