@@ -1,7 +1,7 @@
 package nl.bromnav
 
 import android.app.Activity
-import android.app.AlertDialog
+import androidx.appcompat.app.AlertDialog
 import android.os.Handler
 import android.os.Looper
 import android.text.Editable
@@ -39,7 +39,7 @@ object AddressSearch {
         val la = ArrayAdapter(a, android.R.layout.simple_list_item_1, ArrayList<String>())
         val lv = ListView(a).apply { adapter = la }
         box.addView(et); box.addView(lv, LinearLayout.LayoutParams(-1, (340 * dp).toInt()))
-        val dlg = AlertDialog.Builder(a).setTitle(title).setView(box).setNegativeButton("Close", null).create()
+        val dlg = Ui.dialog(a).setTitle(title).setView(box).setNegativeButton("Close", null).create()
 
         var localHits: List<PdokGeocoder.Address> = emptyList()
         var bookHits: List<PdokGeocoder.Address> = emptyList()   // offline address book

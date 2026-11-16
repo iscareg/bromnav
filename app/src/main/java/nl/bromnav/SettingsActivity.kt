@@ -1,6 +1,6 @@
 package nl.bromnav
 
-import android.app.AlertDialog
+import androidx.appcompat.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
@@ -89,45 +89,46 @@ class SettingsActivity : AppCompatActivity() {
             row("🧪", "Simulate ride / stop simulation", "Fake GPS along the route") { finishWith("simulate") }
         }
 
-        col.addView(Button(this).apply {
-            text = "← Back to the map"; isAllCaps = false; textSize = 18f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
-            background = GradientDrawable().apply { setColor(Color.parseColor("#1f6fe5")); cornerRadius = dp(26).toFloat() }
-            setOnClickListener { finish() }
-        }, LinearLayout.LayoutParams(-1, dp(54)).apply { topMargin = dp(24); leftMargin = dp(20); rightMargin = dp(20) })
+        col.addView(Ui.pill(this, "← Back to the map") { finish() },
+            LinearLayout.LayoutParams(-1, dp(58)).apply { topMargin = dp(24); leftMargin = dp(20); rightMargin = dp(20) })
 
         setContentView(ScrollView(this).apply { setBackgroundColor(Pal.page); addView(col) })
     }
 
     private fun section(title: String) = col.addView(TextView(this).apply {
         text = title.uppercase(); textSize = 13f; typeface = Typeface.DEFAULT_BOLD; letterSpacing = 0.08f
-        setTextColor(Color.parseColor(Pal.accent)); setPadding(dp(4), dp(22), 0, dp(6))
+        setTextColor(Ui.primary); setPadding(dp(4), dp(22), 0, dp(8))
     })
 
     private fun row(icon: String, title: String, sub: String, onClick: () -> Unit) {
+        val card = Ui.card(this, 18, 1).apply { isClickable = true; isFocusable = true; setOnClickListener { onClick() } }
         val r = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(62)
-            setPadding(dp(14), dp(10), dp(14), dp(10))
-            background = GradientDrawable().apply { setColor(Pal.card); cornerRadius = dp(14).toFloat() }
-            setOnClickListener { onClick() }
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(66)
+            setPadding(dp(12), dp(10), dp(14), dp(10))
         }
-        r.addView(TextView(this).apply { text = icon; textSize = 22f; gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(40), -2))
+        // icon in a tinted circle
+        r.addView(TextView(this).apply {
+            text = icon; textSize = 20f; gravity = Gravity.CENTER
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.toneBg(Ui.Tone.BLUE)) }
+        }, LinearLayout.LayoutParams(dp(44), dp(44)))
         val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, dp(6), 0) }
         texts.addView(TextView(this).apply { text = title; textSize = 17f; setTextColor(Color.parseColor(Pal.text)) })
         texts.addView(TextView(this).apply { text = sub; textSize = 14f; setTextColor(Color.parseColor(Pal.sub)) })
         r.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
-        r.addView(TextView(this).apply { text = "›"; textSize = 24f; setTextColor(Color.parseColor(Pal.faint)) })
-        col.addView(r, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        r.addView(TextView(this).apply { text = "›"; textSize = 26f; setTextColor(Color.parseColor(Pal.faint)) })
+        card.addView(r)
+        col.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
     }
 
     private fun confirm(msg: String, ok: () -> Unit) =
-        AlertDialog.Builder(this).setMessage(msg).setPositiveButton("Remove") { _, _ -> ok() }.setNegativeButton("Cancel", null).show()
+        Ui.dialog(this).setMessage(msg).setPositiveButton("Remove") { _, _ -> ok() }.setNegativeButton("Cancel", null).show()
 
     private fun chooseOrderMode() {
         val ms = OrderMode.entries
         val help = mapOf(OrderMode.SHORTEST to "least riding in total; times only break ties",
             OrderMode.HOTTEST to "least time left first, distance still counts",
             OrderMode.ON_TIME to "as few late orders as possible, with a safety margin")
-        AlertDialog.Builder(this).setTitle("Auto order priority")
+        Ui.dialog(this).setTitle("Auto order priority")
             .setSingleChoiceItems(ms.map { "${it.label}\n   ${help[it]}" }.toTypedArray(), ms.indexOf(OrderMode.current)) { d, w ->
                 d.dismiss(); OrderMode.set(this, ms[w]); build()
             }.show()
@@ -135,7 +136,7 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun chooseVehicle() {
         val vs = Vehicle.entries
-        AlertDialog.Builder(this).setTitle("What do you ride?")
+        Ui.dialog(this).setTitle("What do you ride?")
             .setSingleChoiceItems(vs.map { "${it.icon}  ${it.label}" }.toTypedArray(), vs.indexOf(Vehicle.current)) { d, w ->
                 d.dismiss(); Vehicle.set(this, vs[w]); build()
             }.show()
@@ -143,7 +144,7 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun chooseTheme() {
         val opts = listOf("auto" to "Automatic (follows the phone)", "light" to "Light", "dark" to "Dark")
-        AlertDialog.Builder(this).setTitle("Theme")
+        Ui.dialog(this).setTitle("Theme")
             .setSingleChoiceItems(opts.map { it.second }.toTypedArray(), opts.indexOfFirst { it.first == Pal.choice(this) }) { d, w ->
                 d.dismiss(); Pal.setChoice(this, opts[w].first)          // AppCompat recreates the screens
             }.show()

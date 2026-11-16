@@ -1,0 +1,23 @@
+<resources>
+    <style name="Theme.BromNav" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#8AB4FF</item>
+        <item name="colorOnPrimary">#0A2A5C</item>
+        <item name="colorPrimaryContainer">#1F3F73</item>
+        <item name="colorOnPrimaryContainer">#D8E6FF</item>
+        <item name="colorSecondary">#FFB95C</item>
+        <item name="colorOnSecondary">#4A2A00</item>
+        <item name="colorSecondaryContainer">#5C3A00</item>
+        <item name="colorOnSecondaryContainer">#FFE3BD</item>
+        <item name="colorTertiary">#7BD88F</item>
+        <item name="colorError">#FF8A80</item>
+        <item name="android:colorBackground">#121417</item>
+        <item name="colorSurface">#1E2228</item>
+        <item name="colorOnSurface">#ECEFF4</item>
+        <item name="colorSurfaceVariant">#2A2F37</item>
+        <item name="colorOnSurfaceVariant">#A0A8B4</item>
+        <item name="colorOutline">#5C636E</item>
+        <item name="android:statusBarColor">#0B0D10</item>
+        <item name="shapeAppearanceCornerMedium">@style/Shape.BromNav.Medium</item>
+        <item name="shapeAppearanceCornerLarge">@style/Shape.BromNav.Large</item>
+    </style>
+</resources>

@@ -77,6 +77,14 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.4.2")
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("androidx.camera:camera-view:1.4.2")
+    // UI (libraries from github.com/wasabeef/awesome-android-ui on top of Material Components)
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("com.github.skydoves:powermenu:2.2.4")            // menus
+    implementation("com.github.skydoves:balloon:1.6.12")             // tooltips / hints
+    implementation("com.google.android.flexbox:flexbox:3.0.0")       // wrapping chips
+    implementation("com.facebook.shimmer:shimmer:0.5.0")             // loading placeholders
+    implementation("nl.dionsegijn:konfetti-xml:2.0.4")               // run complete
+    implementation("com.github.PhilJay:MPAndroidChart:v3.1.0")       // stats charts
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
 }

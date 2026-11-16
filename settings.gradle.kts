@@ -1,4 +1,4 @@
 pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
-dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+dependencyResolutionManagement { repositories { google(); mavenCentral(); maven("https://jitpack.io") { content { includeGroup("com.github.PhilJay") } } } }
 rootProject.name = "BromNav"
 include(":app")

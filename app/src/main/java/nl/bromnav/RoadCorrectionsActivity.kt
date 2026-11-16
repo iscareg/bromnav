@@ -1,6 +1,6 @@
 package nl.bromnav
 
-import android.app.AlertDialog
+import androidx.appcompat.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
@@ -61,8 +61,8 @@ class RoadCorrectionsActivity : AppCompatActivity() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(66)
                 setPadding(dp(6), dp(8), dp(8), dp(8))
-                background = GradientDrawable().apply { setColor(Pal.card); cornerRadius = dp(14).toFloat() }
             }
+            val rowCard = Ui.card(this, 18, 1)
             val cb = CheckBox(this).apply {
                 isChecked = key in selected
                 setOnCheckedChangeListener { _, c -> if (c) selected.add(key) else selected.remove(key); updateDelete() }
@@ -85,12 +85,13 @@ class RoadCorrectionsActivity : AppCompatActivity() {
                 text = "📍 Show"; isAllCaps = false; textSize = 15f
                 setOnClickListener { setResult(RESULT_OK, Intent().putExtra(EXTRA_GOTO, "${e.a},${e.b}")); finish() }
             }, LinearLayout.LayoutParams(-2, dp(48)))
-            col.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+            rowCard.addView(row)
+            col.addView(rowCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
         }
         val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(16), 0, 0) }
         deleteBtn = button("🗑 Delete", "#d93025") {
             val n = selected.size
-            AlertDialog.Builder(this).setMessage("Delete $n road correction${if (n == 1) "" else "s"}? The map data is used there again.")
+            Ui.dialog(this).setMessage("Delete $n road correction${if (n == 1) "" else "s"}? The map data is used there again.")
                 .setPositiveButton("Delete") { _, _ -> for ((a, b) in selected.toList()) RoadOverrides.remove(a, b); selected.clear(); build() }
                 .setNegativeButton("Cancel", null).show()
         }
@@ -109,10 +110,8 @@ class RoadCorrectionsActivity : AppCompatActivity() {
         deleteBtn.text = if (selected.isEmpty()) "🗑 Delete" else "🗑 Delete ${selected.size}"
     }
 
-    private fun button(t: String, color: String, onClick: () -> Unit) = Button(this).apply {
-        text = t; isAllCaps = false; textSize = 17f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
-        background = GradientDrawable().apply { setColor(Color.parseColor(color)); cornerRadius = dp(24).toFloat() }
-        setOnClickListener { onClick() }
+    private fun button(t: String, color: String, onClick: () -> Unit) = Ui.pill(this, t, Color.parseColor(color), height = 52) { onClick() }.apply {
+        textSize = 16f
         layoutParams = LinearLayout.LayoutParams(0, dp(52), 1f).apply { setMargins(dp(5), 0, dp(5), 0) }
     }
 }

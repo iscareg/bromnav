@@ -89,6 +89,16 @@ Groningen area, so it works without a PC and without mobile data.
 - **Update maps from internet** (☰): fresh routing data from brouter.de, and a fresh map cut out
   of the public [Protomaps](https://protomaps.com) world build directly on the phone.
 
+## UI (branch `ui-redesign`)
+
+Rebuilt on Material Components (Material 3 theme, light and dark) with libraries from
+[awesome-android-ui](https://github.com/wasabeef/awesome-android-ui):
+PowerMenu (☰ menu), Balloon (hints), FlexboxLayout (wrapping chips: no overlapping or cut-off
+text), Shimmer (calculating / reading placeholders), Konfetti (run complete) and MPAndroidChart
+(stats charts). The design tokens and components are in `Ui.kt`. ExpandableLayout was tried for the
+stop rows but does not measure inside a RecyclerView, so the rows use Android transitions instead.
+In navigation the camera keeps your position in the free map area above the bottom panel.
+
 ## Building
 
 Requirements: JDK 17, Android SDK (platform 35), and a phone with USB debugging for testing.

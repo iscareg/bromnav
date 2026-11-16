@@ -1,5 +1,32 @@
 <resources>
-    <style name="Theme.BromNav" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <item name="android:statusBarColor">#14335e</item>
+    <!-- Material 3 base; the hand-built screens take their colours from Pal / Ui (same palette) -->
+    <style name="Theme.BromNav" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#1F6FE5</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorPrimaryContainer">#D8E6FF</item>
+        <item name="colorOnPrimaryContainer">#0A2A5C</item>
+        <item name="colorSecondary">#E8900C</item>
+        <item name="colorOnSecondary">#FFFFFF</item>
+        <item name="colorSecondaryContainer">#FFE3BD</item>
+        <item name="colorOnSecondaryContainer">#4A2A00</item>
+        <item name="colorTertiary">#1E9E4A</item>
+        <item name="colorError">#D93025</item>
+        <item name="android:colorBackground">#F4F6FA</item>
+        <item name="colorSurface">#FFFFFF</item>
+        <item name="colorOnSurface">#1B1B1F</item>
+        <item name="colorSurfaceVariant">#E7EBF2</item>
+        <item name="colorOnSurfaceVariant">#4A5160</item>
+        <item name="colorOutline">#9AA4B1</item>
+        <item name="android:statusBarColor">#14335E</item>
+        <item name="shapeAppearanceCornerMedium">@style/Shape.BromNav.Medium</item>
+        <item name="shapeAppearanceCornerLarge">@style/Shape.BromNav.Large</item>
+    </style>
+    <style name="Shape.BromNav.Medium" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">16dp</item>
+    </style>
+    <style name="Shape.BromNav.Large" parent="">
+        <item name="cornerFamily">rounded</item>
+        <item name="cornerSize">24dp</item>
     </style>
 </resources>

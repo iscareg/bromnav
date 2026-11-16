@@ -2,7 +2,7 @@ package nl.bromnav
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.AlertDialog
+import androidx.appcompat.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -147,11 +147,12 @@ class ScanActivity : AppCompatActivity() {
 
     private fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
     private fun card(c: Int, r: Int = 16) = GradientDrawable().apply { setColor(c); cornerRadius = dp(r).toFloat() }
-    private fun btn(t: String, color: String, onClick: () -> Unit) = Button(this).apply {
-        text = t; isAllCaps = false; textSize = 17f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
-        background = card(Color.parseColor(color), 26); setOnClickListener { onClick() }
-        layoutParams = LinearLayout.LayoutParams(0, dp(52), 1f).apply { setMargins(dp(5), 0, dp(5), 0) }
+    private fun btn(t: String, color: String, onClick: () -> Unit) = Ui.pill(this, t, Color.parseColor(color), height = 54) { onClick() }.apply {
+        textSize = 17f
+        layoutParams = LinearLayout.LayoutParams(0, dp(54), 1f).apply { setMargins(dp(5), 0, dp(5), 0) }
     }
+    private lateinit var doneFlex: com.google.android.flexbox.FlexboxLayout
+    private lateinit var listShimmer: com.facebook.shimmer.ShimmerFrameLayout
     private fun row(size: Float = 16f) = TextView(this).apply { textSize = size; setTextColor(Color.parseColor(Pal.text)); setPadding(0, dp(3), 0, dp(3)) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -176,10 +177,16 @@ class ScanActivity : AppCompatActivity() {
 
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
         // live checklist
-        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = card(Color.parseColor(if (Pal.dark) "#F21E2228" else "#F2FFFFFF")); setPadding(dp(14), dp(10), dp(14), dp(10)) }
-        headTv = row(15f).apply { typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor(Pal.accent)); gravity = Gravity.CENTER }
-        addrTv = row(); timeTv = row(); orderTv = row(); noteTv = row(14f)
-        listOf(headTv, addrTv, timeTv, orderTv, noteTv).forEach { list.addView(it) }
+        val listCard = Ui.card(this, 24, 8, Color.parseColor(if (Pal.dark) "#F21E2228" else "#F5FFFFFF"))
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(12), dp(16), dp(12)) }
+        headTv = row(16f).apply { typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor(Pal.accent)); gravity = Gravity.CENTER }
+        addrTv = row(17f); timeTv = row(17f); orderTv = row(17f); noteTv = row(15f)
+        list.addView(headTv)
+        // the four checklist lines shimmer while nothing is read yet
+        listShimmer = com.facebook.shimmer.ShimmerFrameLayout(this)
+        val lines = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        listOf(addrTv, timeTv, orderTv, noteTv).forEach { lines.addView(it) }
+        listShimmer.addView(lines); list.addView(listShimmer)
         // "I can see it's right": tap a ⏳ line to accept what it currently shows
         addrTv.setOnClickListener { if (bag == null && bagState != "checking" && addr.accept()) lookupBag() }
         timeTv.setOnClickListener { if (time.accept()) render() }
@@ -190,13 +197,13 @@ class ScanActivity : AppCompatActivity() {
         addBtn = btn("Add ✓", "#1e9e4a") { addCurrent() }
         resBtns.addView(addBtn)
         list.addView(resBtns)
-        bottom.addView(list, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        listCard.addView(list)
+        bottom.addView(listCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
 
-        countTv = TextView(this).apply {
-            textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            background = card(Color.parseColor("#E61B5E20"), 12); setPadding(dp(14), dp(6), dp(14), dp(6)); visibility = View.GONE
-        }
-        bottom.addView(countTv, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(8) })
+        // orders already done: green chips (added in this scan) and grey chips (already in the run)
+        countTv = TextView(this).apply { visibility = View.GONE }
+        doneFlex = Ui.flex(this, 6).apply { visibility = View.GONE }
+        bottom.addView(doneFlex, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(btn("🔦", "#374151") { torch = !torch; camera?.cameraControl?.enableTorch(torch) }.apply {
             layoutParams = LinearLayout.LayoutParams(dp(56), dp(52)).apply { setMargins(dp(5), 0, dp(5), 0) }
@@ -437,13 +444,15 @@ class ScanActivity : AppCompatActivity() {
         addBtn.text = if (all) "Add ✓" else "Add with this…"
         // always visible: which orders are already done, so nothing is scanned twice in a rush
         val inRun = existingOrders.filter { o -> added.none { it.orderShort() == o } }
-        if (added.isNotEmpty() || inRun.isNotEmpty()) {
-            countTv.visibility = View.VISIBLE
-            countTv.text = listOfNotNull(
-                if (added.isNotEmpty()) "✓ Added now: " + added.joinToString("  ") { if (it.orderNo.isNotEmpty()) "#${it.orderShort()}" else it.streetName() } else null,
-                if (inRun.isNotEmpty()) "Already in run: " + inRun.joinToString("  ") { "#$it" } else null,
-            ).joinToString("\n")
+        val chips = added.map { "✓ #" + (if (it.orderNo.isNotEmpty()) it.orderShort() else it.streetName()) to Ui.Tone.GREEN } +
+            inRun.map { "in run #$it" to Ui.Tone.NEUTRAL }
+        countTv.text = chips.joinToString(" ") { it.first }
+        if (doneFlex.childCount != chips.size) {
+            doneFlex.removeAllViews()
+            for ((l, t) in chips) doneFlex.addView(Ui.chip(this, l, t, big = true))
         }
+        doneFlex.visibility = if (chips.isEmpty()) View.GONE else View.VISIBLE
+        if (!hasData()) listShimmer.startShimmer() else { listShimmer.stopShimmer(); listShimmer.hideShimmer() }
     }
 
     private fun hasData() = bag != null || addr.best != null || time.best != null || order.best != null || bestNote != null
@@ -493,7 +502,7 @@ class ScanActivity : AppCompatActivity() {
         }
         showKind(); kindBtn.setOnClickListener { exact = !exact; showKind() }
         box.addView(addrBtn); box.addView(orderEt); box.addView(kindBtn); box.addView(timeEt)
-        AlertDialog.Builder(this).setTitle("Complete this order").setView(box)
+        Ui.dialog(this).setTitle("Complete this order").setView(box)
             .setPositiveButton("Add") { _, _ ->
                 val c = chosen
                 if (c == null) { Toast.makeText(this, "An address is needed", Toast.LENGTH_SHORT).show(); paused = false; return@setPositiveButton }
@@ -534,7 +543,7 @@ class ScanActivity : AppCompatActivity() {
     private fun done() {
         if (!hasData()) { finishWith(false); return }
         paused = true
-        AlertDialog.Builder(this).setMessage("Add the receipt you are scanning now?")
+        Ui.dialog(this).setMessage("Add the receipt you are scanning now?")
             .setPositiveButton("Add it") { _, _ -> addCurrent() }
             .setNegativeButton("Discard") { _, _ -> finishWith(false) }
             .setOnCancelListener { paused = false }

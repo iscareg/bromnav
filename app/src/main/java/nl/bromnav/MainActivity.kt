@@ -2,7 +2,7 @@ package nl.bromnav
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.AlertDialog
+import androidx.appcompat.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -84,14 +84,20 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private var style: Style? = null
 
     // --- views
-    private lateinit var banner: LinearLayout
+    private lateinit var banner: View
+    private lateinit var bottomPanel: View
+    private lateinit var bannerShimmer: com.facebook.shimmer.ShimmerFrameLayout
+    private lateinit var detailFlex: com.google.android.flexbox.FlexboxLayout
+    private lateinit var legendFlex: com.google.android.flexbox.FlexboxLayout
+    private lateinit var roadLegend: View
+    private lateinit var konfetti: nl.dionsegijn.konfetti.xml.KonfettiView
     private lateinit var arrowTv: TextView
     private lateinit var instrTv: TextView
     private lateinit var subTv: TextView
-    private lateinit var listCard: LinearLayout
+    private lateinit var listCard: View
     private lateinit var stopsRv: RecyclerView
     private lateinit var orderTv: TextView
-    private lateinit var infoCard: LinearLayout
+    private lateinit var infoCard: View
     private lateinit var normalBox: LinearLayout
     private lateinit var streetTv: TextView
     private lateinit var numberTv: TextView
@@ -107,7 +113,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private lateinit var bigNoteTv: TextView
     private lateinit var mainBtn: Button
     private lateinit var recenterBtn: Button
-    private lateinit var undoBar: LinearLayout
+    private lateinit var undoBar: View
     private lateinit var undoTv: TextView
     private var undoAction: (() -> Unit)? = null
     private val hideUndo = Runnable { undoBar.visibility = View.GONE; undoAction = null }
@@ -203,7 +209,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     override fun onStart() { super.onStart(); mapView?.onStart() }
     override fun onResume() { super.onResume(); mapView?.onResume(); if (::infoCard.isInitialized) refreshAll() }
-    override fun onPause() { mapView?.onPause(); super.onPause() }
+    override fun onPause() { powerMenu?.dismiss(); mapView?.onPause(); super.onPause() }
     override fun onStop() { mapView?.onStop(); super.onStop() }
     override fun onLowMemory() { super.onLowMemory(); mapView?.onLowMemory() }
     override fun onSaveInstanceState(outState: Bundle) {
@@ -273,7 +279,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private fun confirmMapDownload(restart: Boolean) {
         val cm = getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
         val metered = cm.isActiveNetworkMetered
-        AlertDialog.Builder(this).setTitle("Update maps from internet")
+        Ui.dialog(this).setTitle("Update maps from internet")
             .setMessage("Downloads the newest routing data (~180 MB, brouter.de), map (~90 MB, Protomaps) and places and addresses (~40 MB, OpenStreetMap)." +
                 if (metered) "\n\n⚠ You are on mobile data." else "\n\nYou are on Wi-Fi.")
             .setPositiveButton("Download") { _, _ ->
@@ -297,14 +303,14 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val bar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 1000 }
         val msg = tv(14f, Pal.text).apply { text = "Starting…" }
         box.addView(bar); box.addView(msg)
-        val dlg = AlertDialog.Builder(this).setTitle(title).setView(box).setCancelable(false).show()
+        val dlg = Ui.dialog(this).setTitle(title).setView(box).setCancelable(false).show()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         Thread {
             val err = runCatching { job { f, m -> ui.post { bar.progress = (f * 1000).toInt(); msg.text = m } } }.exceptionOrNull()
             ui.post {
                 dlg.dismiss()
                 if (err != null) {
-                    AlertDialog.Builder(this).setTitle("Map update failed").setMessage(err.message ?: err.toString())
+                    Ui.dialog(this).setTitle("Map update failed").setMessage(err.message ?: err.toString())
                         .setPositiveButton("OK", null).show()
                 } else if (restart) restartApp()
             }
@@ -333,50 +339,51 @@ class MainActivity : AppCompatActivity(), LocationListener {
     }
 
     private fun buildUi(saved: Bundle?, tiles: File) {
-        val side = dp(34)  // keep clear of the holder clamps at the corners
+        val side = dp(30)  // keep clear of the holder clamps at the corners
         val root = FrameLayout(this)
         val mv = MapView(this); mapView = mv
         root.addView(mv, FrameLayout.LayoutParams(-1, -1))
         mv.onCreate(saved)
 
-        // --- top: turn banner (centred)
-        banner = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-            background = card(Color.parseColor("#14335e")); setPadding(dp(14), dp(10), dp(14), dp(10)); visibility = View.GONE
+        // --- top: turn banner card (round arrow badge, distance + instruction, what you ride on)
+        val bannerCard = Ui.card(this, 26, 8, Ui.c(if (Pal.dark) "#1F3F73" else "#14335E")).apply { visibility = View.GONE }
+        bannerShimmer = com.facebook.shimmer.ShimmerFrameLayout(this)
+        val bannerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(12), dp(12), dp(16), dp(12)) }
+        arrowTv = Ui.text(this, 34f, Ui.c("#14335E"), bold = true, center = true).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) }
         }
-        arrowTv = tv(40f, "#ffffff").apply { minWidth = dp(54); gravity = Gravity.CENTER }
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, 0, 0) }
-        instrTv = tv(20f, "#ffffff", true); subTv = tv(14f, "#cfe0ff")
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), 0, 0, 0) }
+        instrTv = Ui.text(this, 22f, Color.WHITE, bold = true).apply { maxLines = 3 }
+        subTv = Ui.text(this, 15f, Ui.c("#CFE0FF"))
         col.addView(instrTv); col.addView(subTv)
-        banner.addView(arrowTv); banner.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
-        root.addView(banner, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply { setMargins(side, dp(14), side, 0) })
+        bannerRow.addView(arrowTv, LinearLayout.LayoutParams(dp(64), dp(64)))
+        bannerRow.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
+        bannerShimmer.addView(bannerRow)
+        bannerCard.addView(bannerShimmer)
+        banner = bannerCard
+        root.addView(bannerCard, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply { setMargins(side, dp(14), side, 0) })
 
         // --- recenter: middle of the right edge
-        recenterBtn = Button(this).apply {
-            text = "◎"; textSize = 22f; background = card(Pal.chip, 28); elevation = dp(4).toFloat(); setTextColor(Color.parseColor(Pal.text))
-            setOnClickListener { follow = true; lastFix?.let { moveCamera(it, mode == Mode.NAV) } ?: showRestaurant() }
-        }
-        root.addView(recenterBtn, FrameLayout.LayoutParams(dp(54), dp(54), Gravity.END or Gravity.CENTER_VERTICAL).apply { rightMargin = dp(8) })
+        recenterBtn = Ui.iconButton(this, "◎", 54) { follow = true; lastFix?.let { moveCamera(it, mode == Mode.NAV) } ?: showRestaurant() }
+        root.addView(recenterBtn, FrameLayout.LayoutParams(dp(54), dp(54), Gravity.END or Gravity.CENTER_VERTICAL).apply { rightMargin = dp(10) })
 
-        // --- bottom column: [stop list card] [info card] [icon row]
+        // --- bottom column: [road legend] [stop list] [undo] [info card] [buttons]
         val bottom = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
+        bottomPanel = bottom
 
-        listCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; background = card(); elevation = dp(6).toFloat()
-            setPadding(dp(8), dp(6), dp(8), dp(6)); visibility = View.GONE
+        val listCardView = Ui.card(this).apply { visibility = View.GONE }
+        val listInner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(6)) }
+        orderTv = Ui.text(this, 14f, Ui.primary, bold = true, center = true).apply {
+            setPadding(dp(6), dp(2), dp(6), dp(8)); setOnClickListener { if (store.manualOrder) autoOrder() }
         }
-        orderTv = tv(13f, Pal.accent, true).apply {
-            gravity = Gravity.CENTER; setPadding(dp(6), dp(4), dp(6), dp(6))
-            setOnClickListener { if (store.manualOrder) autoOrder() }
-        }
-        listCard.addView(orderTv, LinearLayout.LayoutParams(-1, -2))
+        listInner.addView(orderTv, LinearLayout.LayoutParams(-1, -2))
         stopsRv = RecyclerView(this).apply { layoutManager = LinearLayoutManager(this@MainActivity); adapter = this@MainActivity.adapter }
-        listCard.addView(stopsRv, LinearLayout.LayoutParams(-1, -2))
-        bottom.addView(listCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+        listInner.addView(stopsRv, LinearLayout.LayoutParams(-1, -2))
+        listCardView.addView(listInner)
+        listCard = listCardView
+        bottom.addView(listCardView, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
 
-        infoCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; background = card(); elevation = dp(6).toFloat()
-            setPadding(dp(14), dp(10), dp(14), dp(10)); gravity = Gravity.CENTER_HORIZONTAL
+        val infoCardView = Ui.card(this).apply {
             setOnClickListener {
                 val t = legTarget
                 if (bigBox.visibility == View.VISIBLE && t != null && t.phone.isNotEmpty())
@@ -384,75 +391,90 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 else toggleList()
             }
         }
-        // normal content: street + number, details, variables
+        val infoInner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setPadding(dp(16), dp(12), dp(16), dp(12)) }
+        // normal content: street + number, information chips, speed / multiplier / stars
         normalBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL }
-        val addrRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        streetTv = tv(20f).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END }
-        numberTv = tv(30f, Pal.accent, true).apply { setPadding(dp(8), 0, 0, 0) }
-        addrRow.addView(streetTv, LinearLayout.LayoutParams(-2, -2).apply { weight = 0f })
+        val addrRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER or Gravity.BOTTOM }
+        streetTv = Ui.text(this, 21f).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END }
+        numberTv = Ui.text(this, 32f, Ui.primary, bold = true).apply { setPadding(dp(8), 0, 0, 0) }
+        addrRow.addView(streetTv, LinearLayout.LayoutParams(0, -2, 1f).apply { width = LinearLayout.LayoutParams.WRAP_CONTENT; weight = 0f })
         addrRow.addView(numberTv)
-        detailTv = tv(14f, Pal.sub).apply { gravity = Gravity.CENTER; maxLines = 3; setLineSpacing(0f, 1.1f) }
-        val varsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, 0) }
-        speedTv = tv(22f, Pal.text, true).apply { text = "– km/h" }
-        factorTv = tv(16f, Pal.sub).apply { setPadding(dp(14), 0, dp(14), 0) }
-        starsTv = tv(24f, Pal.faint).apply { text = "☆☆☆☆☆" }
+        detailTv = Ui.text(this, 15f, Ui.c(Pal.sub), center = true)            // plain-text fallback (no chips)
+        detailFlex = Ui.flex(this).apply { setPadding(0, dp(6), 0, dp(2)) }
+        val varsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(6), 0, 0) }
+        speedTv = Ui.text(this, 22f, bold = true).apply { text = "– km/h" }
+        factorTv = Ui.text(this, 16f, Ui.c(Pal.sub)).apply { setPadding(dp(14), 0, dp(14), 0) }
+        starsTv = Ui.text(this, 24f, Ui.c(Pal.faint)).apply { text = "☆☆☆☆☆" }
         varsRow.addView(speedTv); varsRow.addView(factorTv); varsRow.addView(starsTv)
-        normalBox.addView(addrRow, LinearLayout.LayoutParams(-1, -2))
+        normalBox.addView(addrRow, LinearLayout.LayoutParams(-2, -2))
+        normalBox.addView(detailFlex, LinearLayout.LayoutParams(-1, -2))
         normalBox.addView(detailTv, LinearLayout.LayoutParams(-1, -2))
         normalBox.addView(varsRow, LinearLayout.LayoutParams(-1, -2))
-        infoCard.addView(normalBox, LinearLayout.LayoutParams(-1, -2))
+        infoInner.addView(normalBox, LinearLayout.LayoutParams(-1, -2))
         // "almost there" content: huge house number + side arrow
         bigBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; visibility = View.GONE }
         val bigRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        bigLeftTv = tv(64f, "#e8900c", true).apply { text = "◀" }
-        bigNumTv = tv(84f, Pal.accent, true).apply { setPadding(dp(12), 0, dp(12), 0); includeFontPadding = false }
-        bigRightTv = tv(64f, "#e8900c", true).apply { text = "▶" }
+        bigLeftTv = Ui.text(this, 64f, Ui.warning, bold = true).apply { text = "◀" }
+        bigNumTv = Ui.text(this, 84f, Ui.primary, bold = true).apply { setPadding(dp(12), 0, dp(12), 0); includeFontPadding = false }
+        bigRightTv = Ui.text(this, 64f, Ui.warning, bold = true).apply { text = "▶" }
         bigRow.addView(bigLeftTv); bigRow.addView(bigNumTv); bigRow.addView(bigRightTv)
-        bigSubTv = tv(16f, Pal.sub).apply { gravity = Gravity.CENTER }
-        bigNoteTv = tv(11f, Pal.note).apply { gravity = Gravity.CENTER; maxLines = 4; setPadding(0, dp(3), 0, 0) }
+        bigSubTv = Ui.text(this, 17f, Ui.c(Pal.sub), center = true)
+        bigNoteTv = Ui.text(this, 13f, Ui.c(Pal.note), center = true).apply { maxLines = 4; setPadding(0, dp(4), 0, 0) }
         bigBox.addView(bigRow); bigBox.addView(bigSubTv, LinearLayout.LayoutParams(-1, -2)); bigBox.addView(bigNoteTv, LinearLayout.LayoutParams(-1, -2))
-        infoCard.addView(bigBox, LinearLayout.LayoutParams(-1, -2))
-        undoBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; visibility = View.GONE
-            background = card(Color.parseColor("#F0202020"), 14); setPadding(dp(14), dp(4), dp(6), dp(4))
-        }
-        undoTv = tv(15f, "#ffffff").apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END }
-        undoBar.addView(undoTv, LinearLayout.LayoutParams(0, -2, 1f))
-        undoBar.addView(Button(this).apply {
-            text = "UNDO"; textSize = 16f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor("#ffd54a"))
-            background = null; setOnClickListener { val a = undoAction; hideUndo.run(); a?.invoke() }
-        }, LinearLayout.LayoutParams(-2, dp(48)))
-        roadChip = tv(13f, "#ffffff").apply {
-            background = card(Color.parseColor("#E0202020"), 14); setPadding(dp(12), dp(6), dp(12), dp(6)); gravity = Gravity.CENTER
-            visibility = View.GONE; setOnClickListener { roadChipMenu() }
-        }
-        bottom.addView(roadChip, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(8) })
-        bottom.addView(undoBar, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
-        bottom.addView(infoCard, LinearLayout.LayoutParams(-1, -2))
+        infoInner.addView(bigBox, LinearLayout.LayoutParams(-1, -2))
+        infoCardView.addView(infoInner)
+        infoCard = infoCardView
 
-        // icon row: 🔍  📋  [ main action ]  ☰   (centred)
-        val icons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(10), 0, 0) }
-        scanBtn = iconBtn("📷") { if (simple) openSearch() else openScanner() }
-        listBtn = iconBtn("📋") { toggleList() }
+        // undo: dark card with a yellow UNDO button (10 s)
+        val undoCard = Ui.card(this, 18, 8, Ui.c("#F0202428")).apply { visibility = View.GONE }
+        val undoRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(2), dp(6), dp(2)) }
+        undoTv = Ui.text(this, 16f, Color.WHITE).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END }
+        undoRow.addView(undoTv, LinearLayout.LayoutParams(0, -2, 1f))
+        undoRow.addView(com.google.android.material.button.MaterialButton(this, null, com.google.android.material.R.attr.borderlessButtonStyle).apply {
+            text = "UNDO"; textSize = 17f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Ui.c("#FFD54A"))
+            setOnClickListener { val a = undoAction; hideUndo.run(); a?.invoke() }
+        }, LinearLayout.LayoutParams(-2, dp(52)))
+        undoCard.addView(undoRow)
+        undoBar = undoCard
+
+        // road access legend: coloured chips (tap = edit / hide)
+        val legendCard = Ui.card(this, 18, 6).apply { visibility = View.GONE; setOnClickListener { roadChipMenu() } }
+        val legendInner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), dp(8), dp(10), dp(8)) }
+        roadChip = Ui.text(this, 14f, Ui.c(Pal.text), bold = true, center = true)
+        legendFlex = Ui.flex(this, 5)
+        legendInner.addView(roadChip, LinearLayout.LayoutParams(-1, -2)); legendInner.addView(legendFlex, LinearLayout.LayoutParams(-1, -2))
+        legendCard.addView(legendInner)
+        roadLegend = legendCard
+
+        bottom.addView(legendCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+        bottom.addView(undoCard, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+        bottom.addView(infoCardView, LinearLayout.LayoutParams(-1, -2))
+
+        // buttons: [📷] [📋]  [ main action ]  [☰]   (centred)
+        val icons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setPadding(0, dp(12), 0, 0) }
+        scanBtn = Ui.iconButton(this, "📷") { if (simple) openSearch() else openScanner() }
+        listBtn = Ui.iconButton(this, "📋") { toggleList() }
         icons.addView(scanBtn); icons.addView(listBtn)
-        mainBtn = Button(this).apply {
-            isAllCaps = false; textSize = 18f; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD
-            background = card(Color.parseColor("#1f6fe5"), 28); elevation = dp(4).toFloat()
-            layoutParams = LinearLayout.LayoutParams(dp(128), dp(52)).apply { setMargins(dp(4), 0, dp(4), 0) }
-            setOnClickListener {
-                when {
-                    simple && mode == Mode.NAV -> endNav()
-                    simple -> if (simpleTarget != null) startSimple() else openSearch()
-                    mode == Mode.PLAN -> startRun()
-                    else -> delivered()
-                }
+        mainBtn = Ui.pill(this, "") {
+            when {
+                simple && mode == Mode.NAV -> endNav()
+                simple -> if (simpleTarget != null) startSimple() else openSearch()
+                mode == Mode.PLAN -> startRun()
+                else -> delivered()
             }
+        }.apply {
+            // takes the width that is left between the round buttons; text shrinks rather than wraps
+            maxLines = 1; setPadding(dp(10), 0, dp(10), 0)
+            androidx.core.widget.TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(this, 13, 18, 1, TypedValue.COMPLEX_UNIT_SP)
+            layoutParams = LinearLayout.LayoutParams(0, dp(58), 1f).apply { setMargins(dp(5), 0, dp(5), 0) }
         }
         icons.addView(mainBtn)
-        icons.addView(iconBtn("☰") { openMenu(it) })
+        icons.addView(Ui.iconButton(this, "☰") { openMenu(it) })
         bottom.addView(icons, LinearLayout.LayoutParams(-1, -2))
 
-        root.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { setMargins(side, 0, side, dp(44)) })
+        root.addView(bottom, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { setMargins(side, 0, side, dp(40)) })
+        konfetti = nl.dionsegijn.konfetti.xml.KonfettiView(this)
+        root.addView(konfetti, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
 
         mv.getMapAsync { m ->
@@ -512,17 +534,19 @@ class MainActivity : AppCompatActivity(), LocationListener {
     /** Asked at every app start: delivery mode or simple navigation. */
     private fun showModeChooser() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(dp(24), dp(20), dp(24), dp(12)) }
-        fun big(t: String, sub: String, color: String, onClick: () -> Unit) = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; background = card(Color.parseColor(color), 20)
-            setPadding(dp(16), dp(18), dp(16), dp(18)); setOnClickListener { onClick() }
-            addView(tv(24f, "#ffffff", true).apply { text = t; gravity = Gravity.CENTER })
-            addView(tv(14f, "#e6eefc").apply { text = sub; gravity = Gravity.CENTER })
+        fun big(t: String, sub: String, color: String, onClick: () -> Unit) = Ui.card(this, 22, 4, Color.parseColor(color)).apply {
+            isClickable = true; setOnClickListener { onClick() }
+            addView(LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(dp(16), dp(20), dp(16), dp(20))
+                addView(Ui.text(context, 25f, Color.WHITE, bold = true, center = true).apply { text = t })
+                addView(Ui.text(context, 15f, Ui.c("#E6EEFC"), center = true).apply { text = sub })
+            })
         }
         val pending = store.pending().size
         box.addView(big("🛵  Delivery", if (pending > 0) "receipts, multi-stop runs, stats · $pending stop(s) waiting" else "receipts, multi-stop runs, stats", "#1f6fe5") { setAppMode(false) },
             LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })
         box.addView(big("🧭  Simple nav", "search an address and go · no stats", "#14335e") { setAppMode(true) }, LinearLayout.LayoutParams(-1, -2))
-        chooser = AlertDialog.Builder(this).setView(box).setCancelable(false).show()
+        chooser = Ui.dialog(this).setView(box).setCancelable(false).show()
     }
 
     private fun setAppMode(s: Boolean) {
@@ -540,29 +564,23 @@ class MainActivity : AppCompatActivity(), LocationListener {
         startLeg()
     }
 
+    private var powerMenu: com.skydoves.powermenu.PowerMenu? = null
+
     /** The ☰ menu on the map: only what is needed while riding; everything else is in Settings. */
     private fun openMenu(anchor: View) {
-        val pm = PopupMenu(this, anchor)
-        pm.menu.add(0, 3, 0, if (voice.enabled) "🔊 Voice: on (tap to mute)" else "🔇 Voice: off (tap to enable)")
-        if (!simple && mode == Mode.PLAN && (store.pending().isNotEmpty() || store.cancelled().isNotEmpty())) pm.menu.add(0, 6, 0, "🗑 Clear all stops")
-        pm.menu.add(0, 21, 0, if (showLegal) "🗺 Road access layer: ON (tap to hide)" else "🗺 Show road access")
+        val items = ArrayList<Pair<String, () -> Unit>>()
+        items.add((if (voice.enabled) "🔊  Voice on · tap to mute" else "🔇  Voice off · tap to enable") to { voice.enabled = !voice.enabled; toast(if (voice.enabled) "Voice on" else "Voice off") })
+        if (!simple && mode == Mode.PLAN && (store.pending().isNotEmpty() || store.cancelled().isNotEmpty())) items.add("🗑  Clear all stops" to { confirmClear() })
+        items.add((if (showLegal) "🗺  Hide road access" else "🗺  Show road access") to { setLegal(!showLegal, false) })
         if (mode == Mode.NAV) {
-            if (!simple && legTarget != null) pm.menu.add(0, 4, 0, "⏭ Skip this stop (do it later)")
-            pm.menu.add(0, 5, 0, "⏹ End navigation")
+            if (!simple && legTarget != null) items.add("⏭  Skip this stop" to { skip() })
+            items.add("⏹  End navigation" to { endNav() })
         }
-        pm.menu.add(0, 40, 0, "⚙ Settings…")
-        pm.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                3 -> voice.enabled = !voice.enabled
-                6 -> confirmClear()
-                21 -> setLegal(!showLegal, false)
-                4 -> skip()
-                5 -> endNav()
-                40 -> openSettings()
-            }
-            true
-        }
-        pm.show()
+        items.add("⚙  Settings" to { openSettings() })
+        powerMenu?.dismiss()
+        val pm = Ui.menu(this, this, items); powerMenu = pm
+        // open upwards, right edge on the ☰ button (it sits at the bottom of the screen)
+        pm.showAsDropDown(anchor, -(pm.contentViewWidth - anchor.width), -(pm.contentViewHeight + anchor.height + dp(8)))
     }
 
     // ------------------------------------------------------------------ settings screen
@@ -605,16 +623,20 @@ class MainActivity : AppCompatActivity(), LocationListener {
     private fun setLegal(show: Boolean, edit: Boolean) {
         showLegal = show; editRoads = edit && show
         if (!editRoads) setGeoJson("selroad", EMPTY_FC)
-        roadChip.visibility = if (showLegal) View.VISIBLE else View.GONE
-        roadChip.text = (if (editRoads) "✏ Tap a road to allow / forbid it\n" else "") +
-            "🟩 allowed  🟨 ${Vehicle.current.pathName}  🟥 not allowed  🟦 your allowed  🟪 your forbidden" + "   ✖"
+        roadLegend.visibility = if (showLegal) View.VISIBLE else View.GONE
+        roadChip.text = if (editRoads) "✏ Tap a road to allow / forbid it" else "Road access · ${Vehicle.current.short}"
+        legendFlex.removeAllViews()
+        for ((l, t) in listOf("allowed" to Ui.Tone.GREEN, Vehicle.current.pathName to Ui.Tone.ORANGE, "not allowed" to Ui.Tone.RED,
+                "your allowed" to Ui.Tone.BLUE, "your forbidden" to Ui.Tone.PURPLE)) legendFlex.addView(Ui.chip(this, l, t))
+        legendFlex.addView(Ui.chip(this, "✖ hide", Ui.Tone.NEUTRAL) { setLegal(false, false) })
         if (showLegal) refreshLegal() else setGeoJson("legal", EMPTY_FC)
-        if (show && !edit) toast("Road access for ${Vehicle.current.short}. Long-press or ✏ edit mode to correct a road.")
+        if (show && edit) roadLegend.post { runCatching { Ui.hint(this, this, "Tap a road on the map: allow it, allow both directions, or forbid it").showAlignTop(roadLegend) } }
+        if (show && !edit) toast("Road access for ${Vehicle.current.short}. Long-press a road to correct it.")
     }
 
     private fun roadChipMenu() {
         val items = arrayOf(if (editRoads) "Stop editing (keep layer)" else "✏ Edit roads (tap to allow / forbid)", "Hide road layer")
-        AlertDialog.Builder(this).setItems(items) { _, w ->
+        Ui.dialog(this).setItems(items) { _, w ->
             when (w) { 0 -> setLegal(true, !editRoads); 1 -> setLegal(false, false) }
         }.show()
     }
@@ -684,14 +706,13 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
         box.addView(tv(15f, Pal.text, true).apply { text = state + yours })
         box.addView(tv(12f, Pal.sub).apply { text = "${l.lengthM.toInt()} m · OSM tags:\n$tags"; setPadding(0, dp(6), 0, 0) })
-        val dlg = AlertDialog.Builder(this).setTitle("Road section").setView(android.widget.ScrollView(this).apply { addView(box) })
+        val dlg = Ui.dialog(this).setTitle("Road section").setView(android.widget.ScrollView(this).apply { addView(box) })
             .setNegativeButton("Close") { _, _ -> setGeoJson("selroad", EMPTY_FC) }
             .setOnCancelListener { setGeoJson("selroad", EMPTY_FC) }.create()
         box.addView(View(this), LinearLayout.LayoutParams(-1, dp(8)))
-        for ((label, action) in opts) box.addView(tv(17f, Pal.text).apply {
-            text = label; setPadding(0, dp(12), 0, dp(12))
-            setOnClickListener { dlg.dismiss(); action() }
-        })
+        for ((label, action) in opts) box.addView(Ui.tonal(this, label, when {
+            label.startsWith("⛔") -> Ui.Tone.RED; label.startsWith("↩") -> Ui.Tone.NEUTRAL; else -> Ui.Tone.GREEN }) { dlg.dismiss(); action() },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         dlg.show()
     }
 
@@ -756,7 +777,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             text = "📞 Call ${s.phone}"; isAllCaps = false
             setOnClickListener { startActivity(Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:${s.phone}"))) }
         })
-        AlertDialog.Builder(this).setTitle(if (s.orderNo.isNotEmpty()) "Order #${s.orderNo}" else "Edit stop")
+        Ui.dialog(this).setTitle(if (s.orderNo.isNotEmpty()) "Order #${s.orderNo}" else "Edit stop")
             .setView(android.widget.ScrollView(this).apply { addView(box) })
             .setPositiveButton("Save") { _, _ ->
                 val moved = newAddr?.let { a ->
@@ -786,14 +807,14 @@ class MainActivity : AppCompatActivity(), LocationListener {
     }
 
     private fun confirmClear() {
-        AlertDialog.Builder(this).setMessage("Remove all stops of this run?")
+        Ui.dialog(this).setMessage("Remove all stops of this run?")
             .setPositiveButton("Clear") { _, _ -> store.stops.clear(); store.manualOrder = false; store.save(); refreshAll() }
             .setNegativeButton("Cancel", null).show()
     }
 
     private fun onLongPress(p: LatLon) {
         if (simple) {
-            AlertDialog.Builder(this).setItems(arrayOf("Navigate here", "Avoid here (not allowed for ${Vehicle.current.short})", "Remove avoid marks nearby", "🛣 This road: allow / forbid…")) { _, w ->
+            Ui.dialog(this).setItems(arrayOf("Navigate here", "Avoid here (not allowed for ${Vehicle.current.short})", "Remove avoid marks nearby", "🛣 This road: allow / forbid…")) { _, w ->
                 when (w) {
                     3 -> pickRoad(p)
                     0 -> navigateTo(Stop(System.currentTimeMillis(), "Pin %.5f, %.5f".format(Locale.US, p.lat, p.lon), p, street = "Pin", houseNo = "📍"))
@@ -804,7 +825,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             return
         }
         val items = arrayOf("Add stop here", "Avoid here (not allowed for ${Vehicle.current.short})", "Remove avoid marks nearby", "🛣 This road: allow / forbid…")
-        AlertDialog.Builder(this).setItems(items) { _, which ->
+        Ui.dialog(this).setItems(items) { _, which ->
             when (which) {
                 3 -> pickRoad(p)
                 0 -> addStop(Stop(System.currentTimeMillis(), "Pin %.5f, %.5f".format(Locale.US, p.lat, p.lon), p, street = "Pin", houseNo = "📍"))
@@ -863,6 +884,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         arrivedSaid = false; sideSaid = false; earlySaid = false; lastProgress = null
         banner.visibility = View.VISIBLE
         instrTv.text = "Calculating route…"; subTv.text = ""; arrowTv.text = "…"
+        bannerShimmer.startShimmer()
         refreshAll()
         val seq = ++legSeq
         val nogos = store.nogos.toList()
@@ -897,6 +919,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     private fun setRoute(r: Route) {
         navigator = Navigator(r); voice.newRoute(r); rerouting = false
+        bannerShimmer.stopShimmer(); bannerShimmer.hideShimmer()
         drawRoute(r); refreshAll()
         if (r.walkM > 25) {
             val t = "The last ${r.walkM} m have no legal road for ${Vehicle.current.short}: park at the end of the route and walk. " +
@@ -933,7 +956,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             val lapSaved = lapStart > 0
             if (lapSaved) history.addLap(LapRecord(lapStart, lapStart, now, dels, odo))
             runStartMs = 0
-            voice.say("Run complete"); endNav()
+            voice.say("Run complete"); endNav(); celebrate()
             showUndo("Run finished") {
                 if (lapSaved) history.removeLastLap()
                 runStartMs = lapStart; lapDeliveries = dels; lapOdoM = odo
@@ -959,6 +982,15 @@ class MainActivity : AppCompatActivity(), LocationListener {
             resumeLeg = leg
             startLeg()
         }
+    }
+
+    /** confetti when a run is finished */
+    private fun celebrate() = runCatching {
+        konfetti.start(nl.dionsegijn.konfetti.core.Party(
+            speed = 10f, maxSpeed = 40f, damping = 0.9f, spread = 360,
+            colors = listOf(0xFFE8900C.toInt(), 0xFF1F6FE5.toInt(), 0xFF1E9E4A.toInt(), 0xFFFFD54A.toInt()),
+            emitter = nl.dionsegijn.konfetti.core.emitter.Emitter(duration = 150, java.util.concurrent.TimeUnit.MILLISECONDS).max(120),
+            position = nl.dionsegijn.konfetti.core.Position.Relative(0.5, 0.35)))
     }
 
     /** Disable an order without deleting it (customer cancelled etc.). */
@@ -1211,7 +1243,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         heading?.let { b.bearing(it.toDouble()) }          // heading up while following
         if (navStyle) {
             b.zoom(speedZoom(loc)).tilt(40.0)
-            b.padding(0.0, mapView!!.height * 0.30, 0.0, 0.0)
+            b.padding(0.0, navPaddingTop(), 0.0, navPaddingBottom())
         } else {
             val cam = m.cameraPosition
             val z = if (cam.zoom < PLAN_ZOOM - 0.05) PLAN_ZOOM else cam.zoom
@@ -1223,6 +1255,24 @@ class MainActivity : AppCompatActivity(), LocationListener {
             b.zoom(z)
         }
         m.animateCamera(CameraUpdateFactory.newCameraPosition(b.build()), 800)
+    }
+
+    /**
+     * Navigation camera: your position sits in the free map area between the turn banner and the
+     * bottom panel (cards + buttons), 70 % of the way down, so you see the road ahead and the
+     * marker is never hidden behind the panel.
+     */
+    private fun navTargetY(): Double {
+        val h = mapView?.height?.toDouble() ?: return 0.0
+        val top = if (banner.visibility == View.VISIBLE) banner.bottom.toDouble() + dp(8) else dp(16).toDouble()
+        val panelTop = if (bottomPanel.height > 0) bottomPanel.top.toDouble() - dp(12) else h * 0.75
+        return (top + 0.70 * (panelTop - top)).coerceIn(h * 0.25, h - dp(40).toDouble())
+    }
+    private fun navPaddingBottom(): Double = ((mapView?.height ?: 0) - (bottomPanel.top - dp(12))).toDouble().coerceAtLeast(0.0)
+    /** MapLibre centres the target in the padded rectangle: top padding that puts it at navTargetY() */
+    private fun navPaddingTop(): Double {
+        val h = mapView?.height?.toDouble() ?: return 0.0
+        return (2 * navTargetY() - (h - navPaddingBottom())).coerceAtLeast(0.0)
     }
 
     /**
@@ -1314,10 +1364,13 @@ class MainActivity : AppCompatActivity(), LocationListener {
             return
         }
         normalBox.visibility = View.VISIBLE; bigBox.visibility = View.GONE
+        detailChips.clear()
         when {
             mode == Mode.NAV && next == null -> {
                 streetTv.text = Config.RESTAURANT_NAME; numberTv.text = "🏠"
-                detailTv.text = "All delivered — heading back" + (pr?.let { " · ${Navigator.fmtDist(it.remainingM)}" } ?: "")
+                detailTv.text = ""
+                detailChips.add("✓ All delivered" to Ui.Tone.GREEN)
+                pr?.let { detailChips.add("${Navigator.fmtDist(it.remainingM)} back" to Ui.Tone.NEUTRAL) }
             }
             next == null && simple -> { streetTv.text = "Simple nav"; numberTv.text = "🧭"; detailTv.text = "Tap 🔍 to search a place or address (or long-press the map)" }
             next == null -> { streetTv.text = "No stops yet"; numberTv.text = ""; detailTv.text = "Tap 📷 to scan receipts (⌨ Type in there for a typed address)" }
@@ -1336,10 +1389,30 @@ class MainActivity : AppCompatActivity(), LocationListener {
                 next.paymentIcon().takeIf { it.isNotEmpty() }?.let { more.add(it) }
                 if (next.note.isNotEmpty()) more.add("📝 note")
                 if (pending.size > 1) more.add("+${pending.size - 1} more")
-                detailTv.text = parts.joinToString(" · ") + if (more.isNotEmpty()) "\n" + more.joinToString(" · ") else ""
+                detailTv.text = ""
+                // the same information as chips: wraps onto a second line instead of overlapping
+                for (x in parts) detailChips.add(x to when {
+                    x.startsWith("#") -> Ui.Tone.BLUE; x.startsWith("⏸") -> Ui.Tone.PURPLE; else -> Ui.Tone.NEUTRAL })
+                for (x in more) detailChips.add(x to when {
+                    x.startsWith("⏰") -> Ui.Tone.PURPLE; x.startsWith("⚡") -> Ui.Tone.ORANGE
+                    x.contains("CASH") -> Ui.Tone.ORANGE; x.contains("paid") -> Ui.Tone.GREEN
+                    x.startsWith("📝") -> Ui.Tone.PURPLE; else -> Ui.Tone.NEUTRAL })
             }
         }
         updateStars()
+        renderDetailChips()
+    }
+
+    /** chips shown under the address (rebuilt only when they change) */
+    private val detailChips = ArrayList<Pair<String, Ui.Tone>>()
+    private var shownChips: List<Pair<String, Ui.Tone>> = emptyList()
+    private fun renderDetailChips() {
+        detailTv.visibility = if (detailTv.text.isNullOrEmpty()) View.GONE else View.VISIBLE
+        if (detailChips == shownChips) return
+        shownChips = detailChips.toList()
+        detailFlex.removeAllViews()
+        for ((label, tone) in shownChips) detailFlex.addView(Ui.chip(this, label, tone, big = label.startsWith("#")))
+        detailFlex.visibility = if (shownChips.isEmpty()) View.GONE else View.VISIBLE
     }
 
     /** "46-1" -> big "46" + smaller "-1" (room / flat), "9a" stays one size */
@@ -1414,7 +1487,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         starsTv.setTextColor(when { n >= 5 -> Color.parseColor("#d93025"); n >= 3 -> Color.parseColor("#e8900c"); else -> Color.parseColor("#e0b000") })
         // if a later order is the urgent one, say which
         if (s != (if (mode == Mode.NAV) legTarget else pending.firstOrNull()) && n > 0)
-            detailTv.text = "${detailTv.text}\n⚠ urgent: " + (if (s.orderNo.isNotEmpty()) "#${s.orderShort()} " else "stop ${pending.indexOf(s) + 1} ") + s.streetName()
+            detailChips.add("⚠ urgent: " + (if (s.orderNo.isNotEmpty()) "#${s.orderShort()} " else "stop ${pending.indexOf(s) + 1} ") + s.streetName() to Ui.Tone.RED)
     }
 
     private fun refreshAll() {
@@ -1643,38 +1716,50 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     // ------------------------------------------------------------------ stop list
 
+    /** stops whose details are open in the list (by id) */
+    private val expandedStops = HashSet<Long>()
+
     private inner class StopsAdapter : RecyclerView.Adapter<StopsAdapter.VH>() {
-        inner class VH(val row: LinearLayout, val badge: TextView, val title: TextView, val sub: TextView,
-                       val up: TextView, val down: TextView, val cancel: TextView) : RecyclerView.ViewHolder(row)
+        inner class VH(val card: com.google.android.material.card.MaterialCardView, val row: LinearLayout, val second: LinearLayout,
+                       val badge: TextView, val title: TextView, val chips: com.google.android.flexbox.FlexboxLayout,
+                       val up: TextView, val down: TextView, val cancel: TextView,
+                       val details: TextView, val actions: com.google.android.flexbox.FlexboxLayout) : RecyclerView.ViewHolder(card)
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
-            val row = LinearLayout(parent.context).apply {
-                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(4), dp(6), dp(4), dp(6)); layoutParams = RecyclerView.LayoutParams(-1, -2); minimumHeight = dp(60)
+            val ctx = parent.context
+            val card = Ui.card(ctx, 18, 0, Pal.chip).apply {
+                layoutParams = RecyclerView.LayoutParams(-1, -2).apply { bottomMargin = dp(6) }
             }
-            val badge = TextView(parent.context).apply { gravity = Gravity.CENTER; setTextColor(Color.WHITE); typeface = Typeface.DEFAULT_BOLD; textSize = 15f }
-            val col = LinearLayout(parent.context).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, dp(6), 0) }
-            val title = TextView(parent.context).apply {
-                textSize = 16f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.parseColor(Pal.text))
-                isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END
-            }
-            val sub = TextView(parent.context).apply { textSize = 13f; setTextColor(Color.parseColor(Pal.sub)); maxLines = 2; setLineSpacing(0f, 1.05f) }
-            col.addView(title); col.addView(sub)
-            row.addView(badge, LinearLayout.LayoutParams(dp(38), dp(38)))
+            // collapsed: badge | street + chips | ▲▼ | ✕
+            val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)); minimumHeight = dp(64) }
+            val badge = Ui.text(ctx, 15f, Color.WHITE, bold = true, center = true)
+            val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(10), 0, dp(6), 0) }
+            val title = Ui.text(ctx, 17f, bold = true).apply { isSingleLine = true; ellipsize = android.text.TextUtils.TruncateAt.END }
+            val chips = Ui.flex(ctx, 4, center = false).apply { setPadding(0, dp(4), 0, 0) }
+            col.addView(title); col.addView(chips)
+            row.addView(badge, LinearLayout.LayoutParams(dp(40), dp(40)))
             row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
-            fun arrow(t: String) = TextView(parent.context).apply {
-                text = t; textSize = 16f; gravity = Gravity.CENTER; setTextColor(Color.parseColor(Pal.accent))
-                background = GradientDrawable().apply { setColor(Pal.chip2); cornerRadius = dp(8).toFloat() }
+            fun arrow(t: String) = Ui.text(ctx, 16f, Ui.primary, center = true).apply {
+                text = t; background = GradientDrawable().apply { setColor(Ui.toneBg(Ui.Tone.BLUE)); cornerRadius = dp(10).toFloat() }
             }
-            // ▲ / ▼ stacked: leaves the width for the address
-            val updown = LinearLayout(parent.context).apply { orientation = LinearLayout.VERTICAL }
+            val updown = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
             val up = arrow("▲"); val down = arrow("▼")
-            updown.addView(up, LinearLayout.LayoutParams(dp(44), dp(26)).apply { bottomMargin = dp(3) })
-            updown.addView(down, LinearLayout.LayoutParams(dp(44), dp(26)))
+            updown.addView(up, LinearLayout.LayoutParams(dp(46), dp(27)).apply { bottomMargin = dp(4) })
+            updown.addView(down, LinearLayout.LayoutParams(dp(46), dp(27)))
             row.addView(updown, LinearLayout.LayoutParams(-2, -2))
-            val cancel = arrow("✕").apply { textSize = 18f; setTextColor(Color.parseColor("#d93025")) }
-            row.addView(cancel, LinearLayout.LayoutParams(dp(44), dp(55)).apply { leftMargin = dp(6) })
-            return VH(row, badge, title, sub, up, down, cancel)
+            val cancel = Ui.text(ctx, 18f, Ui.danger, bold = true, center = true).apply {
+                text = "✕"; background = GradientDrawable().apply { setColor(Ui.toneBg(Ui.Tone.RED)); cornerRadius = dp(10).toFloat() }
+            }
+            row.addView(cancel, LinearLayout.LayoutParams(dp(46), dp(58)).apply { leftMargin = dp(6) })
+            // expanded: doorbell name, phone, note + actions
+            val second = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), 0, dp(14), dp(12)) }
+            val details = Ui.text(ctx, 15f, Ui.c(Pal.text)).apply { setLineSpacing(0f, 1.15f) }
+            val actions = Ui.flex(ctx, 8, center = false).apply { setPadding(0, dp(8), 0, 0) }
+            second.addView(details); second.addView(actions)
+            second.visibility = View.GONE
+            val both = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL; addView(row); addView(second) }
+            card.addView(both)
+            return VH(card, row, second, badge, title, chips, up, down, cancel, details, actions)
         }
 
         override fun getItemCount() = store.pending().size + store.cancelled().size
@@ -1684,22 +1769,36 @@ class MainActivity : AppCompatActivity(), LocationListener {
             if (position >= pend.size) { bindCancelled(h, store.cancelled()[position - pend.size]); return }
             val s = pend[position]
             h.title.paintFlags = h.title.paintFlags and android.graphics.Paint.STRIKE_THRU_TEXT_FLAG.inv()
-            h.row.alpha = 1f; h.up.visibility = View.VISIBLE; h.down.visibility = View.VISIBLE
-            h.cancel.text = "✕"; h.cancel.setTextColor(Color.parseColor("#d93025"))
+            h.card.alpha = 1f; h.up.visibility = View.VISIBLE; h.down.visibility = View.VISIBLE
+            h.cancel.text = "✕"; h.cancel.setTextColor(Ui.danger)
             h.cancel.setOnClickListener { cancelStop(s) }
             // the order number (last 3 digits) is what the kitchen and the bags show; the position otherwise
             h.badge.text = if (s.orderNo.isNotEmpty()) s.orderShort() else "${position + 1}"
-            h.badge.textSize = if (h.badge.text.length >= 3) 12f else 15f
+            h.badge.textSize = if (h.badge.text.length >= 3) 13f else 16f
             h.badge.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(urgencyColor(s)) }
             h.title.text = "${s.streetName()} ${s.number()}"
-            val parts = ArrayList<String>()
-            etaByStop[s.id]?.let { parts.add("ETA ${hm(it)}") }
-            timeLabel(s).takeIf { it.isNotEmpty() }?.let { parts.add(it) }
-            s.paymentIcon().takeIf { it.isNotEmpty() }?.let { parts.add(it) }
-            slackMin(s)?.let { parts.add(if (it >= 0) "+$it min" else "${-it} min LATE") }
-            if (parts.isEmpty()) parts.add("tap to set order no. / deadline")
-            h.sub.text = parts.joinToString(" · ")
-            h.row.setOnClickListener { editStop(s) }
+            h.chips.removeAllViews()
+            etaByStop[s.id]?.let { h.chips.addView(Ui.chip(h.card.context, "ETA ${hm(it)}")) }
+            timeLabel(s).takeIf { it.isNotEmpty() }?.let { h.chips.addView(Ui.chip(h.card.context, it, if (it.startsWith("⏰")) Ui.Tone.PURPLE else Ui.Tone.ORANGE)) }
+            s.paymentIcon().takeIf { it.isNotEmpty() }?.let { h.chips.addView(Ui.chip(h.card.context, it, if (s.payment == "cash") Ui.Tone.ORANGE else Ui.Tone.GREEN)) }
+            slackMin(s)?.let { h.chips.addView(Ui.chip(h.card.context, if (it >= 0) "+$it min" else "${-it} min LATE", if (it >= 0) Ui.Tone.GREEN else Ui.Tone.RED)) }
+            if (s.note.isNotEmpty()) h.chips.addView(Ui.chip(h.card.context, "📝", Ui.Tone.PURPLE))
+            if (h.chips.childCount == 0) h.chips.addView(Ui.chip(h.card.context, "tap for details"))
+            h.details.text = listOfNotNull(s.name.takeIf { it.isNotEmpty() }?.let { "🔔 $it" }, s.phone.takeIf { it.isNotEmpty() }?.let { "📞 $it" },
+                s.note.takeIf { it.isNotEmpty() }?.let { "📝 $it" }, s.label).joinToString("\n")
+            h.actions.removeAllViews()
+            h.actions.addView(Ui.chip(h.card.context, "✏ Edit", Ui.Tone.BLUE, big = true) { editStop(s) })
+            if (s.phone.isNotEmpty()) h.actions.addView(Ui.chip(h.card.context, "📞 Call", Ui.Tone.GREEN, big = true) {
+                startActivity(Intent(Intent.ACTION_DIAL, android.net.Uri.parse("tel:${s.phone}"))) })
+            if (position > 0) h.actions.addView(Ui.chip(h.card.context, "⤴ Do next", Ui.Tone.ORANGE, big = true) {
+                moveStop(h.bindingAdapterPosition, 0); toast("${s.streetName()} ${s.number()} is next") })
+            // expanded state follows the stop, not the recycled view; tap = open / close with an animation
+            h.second.visibility = if (s.id in expandedStops) View.VISIBLE else View.GONE
+            h.row.setOnClickListener {
+                if (!expandedStops.remove(s.id)) expandedStops.add(s.id)
+                android.transition.TransitionManager.beginDelayedTransition(listCard as ViewGroup, android.transition.AutoTransition().setDuration(180))
+                h.second.visibility = if (s.id in expandedStops) View.VISIBLE else View.GONE
+            }
             h.row.setOnLongClickListener { moveStop(h.bindingAdapterPosition, 0); toast("${s.streetName()} ${s.number()} is next"); true }
             h.up.alpha = if (position == 0) 0.3f else 1f
             h.down.alpha = if (position == pend.size - 1) 0.3f else 1f
@@ -1708,15 +1807,15 @@ class MainActivity : AppCompatActivity(), LocationListener {
         }
 
         private fun bindCancelled(h: VH, s: Stop) {
-            h.badge.text = "✕"
-            h.badge.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#9e9e9e")) }
+            h.second.visibility = View.GONE
+            h.badge.text = "✕"; h.badge.textSize = 16f
+            h.badge.background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.c("#9E9E9E")) }
             h.title.text = "${s.streetName()} ${s.number()}"
             h.title.paintFlags = h.title.paintFlags or android.graphics.Paint.STRIKE_THRU_TEXT_FLAG
-            h.sub.text = "cancelled · tap ↺ to restore"
-            h.row.alpha = 0.6f
+            h.chips.removeAllViews(); h.chips.addView(Ui.chip(h.card.context, "cancelled · ↺ restores"))
+            h.card.alpha = 0.6f
             h.up.visibility = View.INVISIBLE; h.down.visibility = View.INVISIBLE
-            h.badge.text = "✕"; h.badge.textSize = 15f
-            h.cancel.text = "↺"; h.cancel.setTextColor(Color.parseColor("#1e9e4a"))
+            h.cancel.text = "↺"; h.cancel.setTextColor(Ui.success)
             h.cancel.setOnClickListener { restoreStop(s) }
             h.row.setOnClickListener(null); h.row.setOnLongClickListener(null)
         }
