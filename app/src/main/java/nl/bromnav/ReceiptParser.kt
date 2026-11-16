@@ -4,7 +4,7 @@ package nl.bromnav
  * Parses OCR text of a Wabi-Sabi delivery receipt (Dutch or English layout).
  *
  * Layout (both languages):
- *   Order nr / Bestelnummer:   ABCD12 - 008
+ *   Order nr / Bestelnummer:   12345ABC - 008
  *   Delivery time / Bezorgtijd: 17:30 (req.: 17:30)   |  20:25 (gevr.: ZSM)
  *   [Customer | Klant]
  *   <name>
@@ -44,7 +44,7 @@ object ReceiptParser {
         val key get() = "$postcode $houseNo"
     }
 
-    // letters may come out as look-alike digits ("9745 0S" for 9745 CS); the address book fixes them
+    // letters may come out as look-alike digits ("1234 A8" for 1234 AB); the address book fixes them
     private val POSTCODE = Regex("""^\s*([1-9]\d{3})\s?((?=[A-Za-z0-9]{2}\b)(?:[A-Za-z][A-Za-z0-9]|[0-9][A-Za-z]))\b\s*(.*)$""")
     private val STREET = Regex("""^\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .'\-]*?[A-Za-zÀ-ÿ.])\s+(\d{1,5})\s*(?:([A-Za-z]{1,2})\b|[-/ ]\s*([A-Za-z0-9]{1,4}))?\s*$""")
     private val PHONE = Regex("""(\+31|0031|0)\s?[1-9](?:[\s-]?\d){8}""")

@@ -37,7 +37,7 @@ class AddressBook private constructor(private val groups: List<Group>) {
     val size get() = groups.sumOf { it.numbers.size }
     val groupCount get() = groups.size
 
-    /** "Proefstraat 9a": the address closest to [p] (within ~300 m), or null */
+    /** "Voorbeeldstraat 9a": the address closest to [p] (within ~300 m), or null */
     fun nearest(p: LatLon): String? = nearestAddress(p)?.let { "${it.street} ${it.houseNo}" }
 
     /** the address closest to [p] within [maxM] metres */
@@ -54,7 +54,7 @@ class AddressBook private constructor(private val groups: List<Group>) {
     fun hasPostcode(pc: String) = byPostcode.containsKey(pc.uppercase())
 
     /**
-     * Exact lookup as printed on a receipt: "9745CS" + "9a" / "46-1" / "25-27".
+     * Exact lookup as printed on a receipt: "1234AB" + "9a" / "46-1" / "25-27".
      * Falls back to the plain number ("46-1" -> 46) but never to another number.
      */
     fun lookup(postcode: String, houseNo: String): PdokGeocoder.Address? {
@@ -67,7 +67,7 @@ class AddressBook private constructor(private val groups: List<Group>) {
     }
 
     /**
-     * Lookup that repairs OCR look-alikes in the postcode letters ("9745 0S" -> 9745CS). Among the
+     * Lookup that repairs OCR look-alikes in the postcode letters ("1234 A8" -> 1234AB). Among the
      * variants that exist with this house number, the one whose street matches [street] wins.
      */
     fun lookupFuzzy(postcode: String, houseNo: String, street: String?): PdokGeocoder.Address? {
@@ -85,7 +85,7 @@ class AddressBook private constructor(private val groups: List<Group>) {
     }
 
     /**
-     * Typed search: "proefstraat 9a", "proef 9", "9745cs 9a", "9745 CS", "Laan van het Voorbeeld".
+     * Typed search: "voorbeeldstraat 9a", "voorb 9", "1234ab 9a", "1234 AB", "Laan van het Voorbeeld".
      * Without a number one hit per street (its first address); nearest first.
      */
     fun search(q: String, near: LatLon, limit: Int = 6): List<PdokGeocoder.Address> {

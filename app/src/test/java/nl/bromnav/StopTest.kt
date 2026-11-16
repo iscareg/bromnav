@@ -18,8 +18,8 @@ class StopTest {
     @Test fun addressParts() {
         val s = Stop(1, "Lange Voorbeeldstraat 33a, 9999ZZ Groningen", LatLon(53.0, 6.0))   // old data without PDOK fields
         assertEquals("Lange Voorbeeldstraat", s.streetName()); assertEquals("33a", s.number())
-        val p = Stop(2, "Proefweg 8-2, 9999ZY Groningen", LatLon(53.0, 6.0), street = "Herestraat", houseNo = "8-2")
-        assertEquals("Herestraat", p.streetName()); assertEquals("8-2", p.number())
+        val p = Stop(2, "Proefweg 8-2, 9999ZY Groningen", LatLon(53.0, 6.0), street = "Proefweg", houseNo = "8-2")
+        assertEquals("Proefweg", p.streetName()); assertEquals("8-2", p.number())
         assertEquals("9999ZY 8-2", p.key())
     }
 

@@ -138,7 +138,7 @@ class ReceiptParserTest {
 
     @Test fun shortOrderNumber() {
         assertEquals("010", Stop.shortOrder("12345ABC-010"))
-        assertEquals("006", Stop.shortOrder("22222DEF - 006"))
+        assertEquals("006", Stop.shortOrder("67890XYZ - 006"))
         assertEquals("007", Stop.shortOrder("7"))
         assertEquals("026", Stop.shortOrder("13579QRS-1026"))
     }
