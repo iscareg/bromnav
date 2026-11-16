@@ -16,3 +16,5 @@ tools/vendor/
 env.sh
 data/addresses.tsv.gz
 data/addresses_raw.json
+data/pois.tsv.gz
+data/profiles/bromfiets.brf
