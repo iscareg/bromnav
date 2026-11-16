@@ -738,6 +738,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
     /** after a vehicle change or a road correction: redraw, recompute legs, reroute */
     private fun roadsChanged(reason: String = "Road access changed") {
+        if (reason == "Vehicle changed") style?.addImage("scooter", scooterBitmap())     // marker shows the new vehicle
         drawOverrides()
         if (showLegal) { setLegal(true, editRoads) }
         if (mode == Mode.NAV) reroute(reason, force = true)
@@ -1361,32 +1362,29 @@ class MainActivity : AppCompatActivity(), LocationListener {
     }
 
     /** Top-down scooter marker (pointing up = direction of travel), drawn in code. */
+    /** Position marker: white disc with your vehicle's icon and a pointer to the front (it turns with your heading). */
     private fun scooterBitmap(): android.graphics.Bitmap {
         val sz = 120
         val bmp = android.graphics.Bitmap.createBitmap(sz, sz, android.graphics.Bitmap.Config.ARGB_8888)
         val c = android.graphics.Canvas(bmp)
         val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
         val cx = sz / 2f
-        p.color = Color.WHITE; c.drawCircle(cx, cx, 56f, p)                                  // white disc for contrast
-        p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 5f; p.color = Color.parseColor("#1f6fe5")
-        c.drawCircle(cx, cx, 54f, p); p.style = android.graphics.Paint.Style.FILL
-        p.color = Color.parseColor("#14335e")
-        c.drawRoundRect(cx - 9, 16f, cx + 9, 40f, 8f, 8f, p)                                // front wheel
-        c.drawRoundRect(cx - 9, 82f, cx + 9, 106f, 8f, 8f, p)                               // rear wheel
         p.color = Color.parseColor("#1f6fe5")
-        c.drawRoundRect(cx - 17, 36f, cx + 17, 92f, 14f, 14f, p)                            // body / seat
-        p.color = Color.parseColor("#14335e"); p.strokeWidth = 7f; p.strokeCap = android.graphics.Paint.Cap.ROUND
-        c.drawLine(cx - 28, 40f, cx + 28, 40f, p)                                           // handlebar
-        p.color = Color.parseColor("#ffd54a")
-        val tri = android.graphics.Path().apply { moveTo(cx, 6f); lineTo(cx - 9, 18f); lineTo(cx + 9, 18f); close() }
-        c.drawPath(tri, p)                                                                  // headlight = front
+        val tri = android.graphics.Path().apply { moveTo(cx, 2f); lineTo(cx - 16, 24f); lineTo(cx + 16, 24f); close() }
+        c.drawPath(tri, p)                                                                  // pointer = direction of travel
+        p.color = Color.WHITE; c.drawCircle(cx, cx + 4, 46f, p)                              // white disc for contrast
+        p.style = android.graphics.Paint.Style.STROKE; p.strokeWidth = 6f; p.color = Color.parseColor("#1f6fe5")
+        c.drawCircle(cx, cx + 4, 44f, p); p.style = android.graphics.Paint.Style.FILL
+        val icon = androidx.core.content.ContextCompat.getDrawable(this, Vehicle.current.iconRes)!!.mutate()
+        icon.setTint(Color.parseColor("#14335e")); icon.setBounds((cx - 30).toInt(), (cx + 4 - 30).toInt(), (cx + 30).toInt(), (cx + 4 + 30).toInt())
+        icon.draw(c)
         return bmp
     }
 
     private fun showProgress(pr: Navigator.Progress) {
         val r = navigator?.route ?: return
         if (pr.remainingM < 30) {
-            arrowTv.text = "⚑"
+            arrowTv.setCompoundDrawables(null, null, null, null); arrowTv.text = "⚑"
             instrTv.text = if (legTarget != null) "Arrived" else "Back at ${Config.RESTAURANT_NAME}"
             subTv.text = "Tap ${if (legTarget == null) "Done" else "Delivered"} when finished"
             return
@@ -1395,15 +1393,17 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val t = pr.nextTransition
         val useTransition = t != null && (h == null || pr.distToTransitionM < pr.distToHintM - 20)
         if (useTransition) {
-            arrowTv.text = if (t!!.to == WayClass.MOPED_PATH) Vehicle.current.icon else "🛣"
+            if (t!!.to == WayClass.MOPED_PATH) {          // your vehicle's icon: onto the moped / cycle path
+                arrowTv.text = ""; arrowTv.setCompoundDrawables(null, Ui.vehicleIcon(this, Vehicle.current, 40, Ui.c("#14335E")), null, null)
+            } else { arrowTv.setCompoundDrawables(null, null, null, null); arrowTv.text = "🛣" }
             instrTv.text = "${Navigator.fmtDist(pr.distToTransitionM)}  ${Navigator.describeTransition(t).replaceFirstChar { it.uppercase() }}"
         } else if (h != null) {
             val (arrow, text) = Navigator.describe(h)
-            arrowTv.text = arrow
+            arrowTv.setCompoundDrawables(null, null, null, null); arrowTv.text = arrow
             val name = r.segmentAt(h.idx)?.name
             instrTv.text = "${Navigator.fmtDist(pr.distToHintM)}  $text" + (if (name != null && h.cmd !in 13..14) " · $name" else "")
         } else {
-            arrowTv.text = "↑"; instrTv.text = "Continue ${Navigator.fmtDist(pr.remainingM)}"
+            arrowTv.setCompoundDrawables(null, null, null, null); arrowTv.text = "↑"; instrTv.text = "Continue ${Navigator.fmtDist(pr.remainingM)}"
         }
         subTv.text = when (pr.currentClass) { WayClass.MOPED_PATH -> "on ${Vehicle.current.pathName}"; WayClass.ROAD -> "on road"; else -> "" }
     }

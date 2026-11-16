@@ -62,6 +62,12 @@ object Ui {
         Tone.PURPLE -> c(if (Pal.dark) "#EEDCFF" else "#3B1A5C")
     }
 
+    /** A vehicle's icon, tinted, [sizeDp] square. */
+    fun vehicleIcon(ctx: Context, v: Vehicle, sizeDp: Int, color: Int): android.graphics.drawable.Drawable =
+        androidx.core.content.ContextCompat.getDrawable(ctx, v.iconRes)!!.mutate().apply {
+            setTint(color); setBounds(0, 0, dp(ctx, sizeDp), dp(ctx, sizeDp))
+        }
+
     /** Elevated rounded card (map overlays, list rows, settings rows). */
     fun card(ctx: Context, radius: Int = 24, elevation: Int = 6, color: Int = Pal.card) = MaterialCardView(ctx).apply {
         this.radius = dp(ctx, radius).toFloat(); cardElevation = dp(ctx, elevation).toFloat()
@@ -98,6 +104,7 @@ object Ui {
         text = icon; textSize = 22f; insetTop = 0; insetBottom = 0; minWidth = 0; minHeight = 0
         setPadding(0, 0, 0, 0); iconPadding = 0
         cornerRadius = dp(ctx, size / 2); backgroundTintList = ColorStateList.valueOf(Pal.chip); setTextColor(c(Pal.text))
+        strokeColor = ColorStateList.valueOf(c(Pal.faint)); strokeWidth = dp(ctx, 1)    // visible on a dark map too
         elevation = dp(ctx, 4).toFloat()
         layoutParams = android.widget.LinearLayout.LayoutParams(dp(ctx, size), dp(ctx, size)).apply { setMargins(dp(ctx, 4), 0, dp(ctx, 4), 0) }
         setOnClickListener { onClick(it) }

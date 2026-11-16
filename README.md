@@ -30,9 +30,11 @@ Groningen area, so it works without a PC and without mobile data.
   (`app/src/main/assets/profiles/bromfiets.brf`).
 - Never uses cycle paths closed to mopeds (`moped=no`), roads with a compulsory moped path
   (`moped=use_sidepath`), motorroads or motorways. Uses fiets/bromfietspaden (`moped=designated`).
-- **Vehicle** (Settings → Vehicle): 🛵 bromfiets with yellow plate (45 km/h), 🛵 snorfiets with blue plate
-  (25 km/h, uses fietspaden `mofa=*`, not G13 / compulsory-cycle-path roads), or 🚲 e-bike up to
-  25 km/h without plate (bicycle rules). One profile, variable `vehicle`.
+- **Vehicle** (Settings → Vehicle): bromfiets with yellow plate (45 km/h), snorfiets with blue plate
+  (25 km/h, uses fietspaden `mofa=*`, not G13 / compulsory-cycle-path roads), e-bike up to 25 km/h
+  without plate, or a normal bicycle (~18 km/h); the last two follow bicycle rules. One profile,
+  variable `vehicle`. Icons: [Material Symbols](https://github.com/google/material-design-icons)
+  (Apache License 2.0).
 - **Road access layer** (☰ → 🗺 Show road access): colours every road by what the router believes for your vehicle:
   green allowed, yellow moped/cycle path, red not allowed. It is computed on the phone from the
   routing data with the routing profile itself.

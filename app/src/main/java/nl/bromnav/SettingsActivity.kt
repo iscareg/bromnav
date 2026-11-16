@@ -67,7 +67,7 @@ class SettingsActivity : AppCompatActivity() {
 
         section("Delivery")
         row("🔀", "Auto order priority", OrderMode.current.label) { chooseOrderMode() }
-        row(Vehicle.current.icon, "Vehicle", Vehicle.current.label) { chooseVehicle() }
+        row("", "Vehicle", Vehicle.current.label, Ui.vehicleIcon(this, Vehicle.current, 26, Ui.toneFg(Ui.Tone.BLUE))) { chooseVehicle() }
         row("📊", "Stats & history", "Laps, time per order, your speed") { startActivity(Intent(this, StatsActivity::class.java)) }
 
         section("Roads & map")
@@ -114,14 +114,17 @@ class SettingsActivity : AppCompatActivity() {
         setTextColor(Ui.primary); setPadding(dp(4), dp(22), 0, dp(8))
     })
 
-    private fun row(icon: String, title: String, sub: String, onClick: () -> Unit) {
+    private fun row(icon: String, title: String, sub: String, drawable: android.graphics.drawable.Drawable? = null, onClick: () -> Unit) {
         val card = Ui.card(this, 18, 1).apply { isClickable = true; isFocusable = true; setOnClickListener { onClick() } }
         val r = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; minimumHeight = dp(66)
             setPadding(dp(12), dp(10), dp(14), dp(10))
         }
         // icon in a tinted circle
-        r.addView(TextView(this).apply {
+        r.addView(if (drawable != null) android.widget.ImageView(this).apply {
+            setImageDrawable(drawable); scaleType = android.widget.ImageView.ScaleType.CENTER; setPadding(dp(9), dp(9), dp(9), dp(9))
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.toneBg(Ui.Tone.BLUE)) }
+        } else TextView(this).apply {
             text = icon; textSize = 20f; gravity = Gravity.CENTER
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Ui.toneBg(Ui.Tone.BLUE)) }
         }, LinearLayout.LayoutParams(dp(44), dp(44)))
@@ -150,10 +153,18 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun chooseVehicle() {
         val vs = Vehicle.entries
+        // single-choice list with each vehicle's icon
+        val adapter = object : android.widget.ArrayAdapter<Vehicle>(this, android.R.layout.select_dialog_singlechoice, vs) {
+            override fun getView(pos: Int, convert: android.view.View?, parent: android.view.ViewGroup): android.view.View {
+                val v = super.getView(pos, convert, parent) as TextView
+                v.text = vs[pos].label; v.textSize = 17f; v.compoundDrawablePadding = dp(14); v.minHeight = dp(60)
+                v.setCompoundDrawablesRelative(Ui.vehicleIcon(context, vs[pos], 30, Ui.primary), null, v.compoundDrawablesRelative[2], null)
+                return v
+            }
+        }
         Ui.dialog(this).setTitle("What do you ride?")
-            .setSingleChoiceItems(vs.map { "${it.icon}  ${it.label}" }.toTypedArray(), vs.indexOf(Vehicle.current)) { d, w ->
-                d.dismiss(); Vehicle.set(this, vs[w]); build()
-            }.show()
+            .setSingleChoiceItems(adapter, vs.indexOf(Vehicle.current)) { d, w -> d.dismiss(); Vehicle.set(this, vs[w]); build() }
+            .show()
     }
 
     private fun chooseTheme() {

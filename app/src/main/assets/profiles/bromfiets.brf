@@ -11,21 +11,23 @@
 #   * motor_vehicle / vehicle / access = no|private         -> forbidden unless moped=yes|designated
 #   * destination / delivery                                -> allowed with a penalty (we deliver!)
 #
-# The same file also serves two other vehicles (global variable "vehicle", set by the app):
+# The same file also serves three other vehicles (global variable "vehicle", set by the app):
 #   1 = snorfiets (blue plate, 25 km/h): OSM "mofa". Uses fietspaden (G11) and roads; not G13
 #       (mofa=no), not where a compulsory cycle path runs alongside (bicycle/mofa=use_sidepath).
 #   2 = e-bike up to 25 km/h without plate: legally a bicycle, follows the "bicycle" tags.
+#   3 = normal bicycle: the same rules as the e-bike, slower (~18 km/h).
 #
-# Speeds: kinematic model, vmax 45 km/h (25 for vehicle 1 and 2).
+# Speeds: kinematic model, vmax 45 km/h (25 for vehicle 1 and 2, 18 for vehicle 3).
 #
 ---model:btools.router.KinematicModel
 
 ---context:global
 
-assign vehicle = 0   # %vehicle% | 0 = bromfiets (yellow plate 45), 1 = snorfiets (blue plate 25), 2 = e-bike 25 (no plate) | number
+assign vehicle = 0   # %vehicle% | 0 = bromfiets (yellow plate 45), 1 = snorfiets (blue plate 25), 2 = e-bike 25 (no plate), 3 = bicycle | number
 assign isbrom = equal vehicle 0
 assign issnor = equal vehicle 1
-assign isbike = equal vehicle 2
+# e-bike and normal bicycle: both legally bicycles
+assign isbike = or equal vehicle 2 equal vehicle 3
 
 assign validForCars         = true
 assign validForBikes        = false
@@ -35,7 +37,7 @@ assign validForBikes        = false
 assign allow_untagged_cycleway = false   # %allow_untagged_cycleway% | Use cycleways without moped tag | boolean
 assign avoid_fast_roads        = true    # %avoid_fast_roads% | Prefer roads <= 50 km/h | boolean
 
-assign vmax             = if isbrom then 45 else 25
+assign vmax             = if isbrom then 45 else if equal vehicle 3 then 18 else 25
 assign totalweight      = if isbike then 120 else 190    # vehicle + rider + delivery box (kg)
 assign f_roll           = if isbike then 12 else 28      # N  (190 kg * 9.81 * 0.015)
 assign f_air            = 0.38   # N/(m/s)^2  0.5*cw*A*rho
