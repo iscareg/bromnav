@@ -130,7 +130,7 @@ object Ui {
             .setTextColor(c(Pal.text)).setTextSize(18).setTextGravity(Gravity.START)
             .setMenuColor(Pal.card).setSelectedMenuColor(toneBg(Tone.BLUE)).setSelectedTextColor(toneFg(Tone.BLUE))
             .setAutoDismiss(true).setLifecycleOwner(owner)
-            .setPadding(dp(ctx, 6)).setWidth(dp(ctx, 300))
+            .setWidth(dp(ctx, 300))
             .setOnMenuItemClickListener { pos, _ -> pm?.dismiss(); items[pos].second() }
         pm = b.build()
         return pm
