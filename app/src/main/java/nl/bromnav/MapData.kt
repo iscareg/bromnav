@@ -40,35 +40,36 @@ object MapData {
         else (runCatching { ctx.assets.open(ADDR_NAME) }.getOrNull() ?: ctx.assets.open(ADDR_NAME.removeSuffix(".gz"))).use { AddressBook.load(it) }
     }.onFailure { android.util.Log.w("BromNav", "addresses", it) }.getOrNull()
 
-    /** Fresh address book from OpenStreetMap (BAG import); same format as tools/build_addresses.py. */
+    /**
+     * Fresh address book from OpenStreetMap (BAG import); same format as tools/build_addresses.py.
+     * Uses Overpass CSV output, read line by line: ~5x less data than JSON and little memory.
+     */
     fun downloadAddresses(ctx: Context, progress: (Double, String) -> Unit) {
         progress(0.0, "Downloading addresses from OpenStreetMap…")
-        val q = "[out:json][timeout:600];nwr[\"addr:housenumber\"][\"addr:postcode\"]($ADDR_BBOX);out center tags;"
-        val c = URL("https://overpass-api.de/api/interpreter").openConnection() as HttpURLConnection
-        c.connectTimeout = 20000; c.readTimeout = 900_000; c.doOutput = true
-        c.setRequestProperty("User-Agent", "BromNav")
-        c.outputStream.use { it.write(("data=" + java.net.URLEncoder.encode(q, "UTF-8")).toByteArray()) }
-        val json = try { c.inputStream.bufferedReader().readText() } finally { c.disconnect() }
-        progress(0.7, "Indexing addresses…")
-        val els = org.json.JSONObject(json).getJSONArray("elements")
+        val q = "[out:csv(::lat,::lon,\"addr:postcode\",\"addr:housenumber\",\"addr:street\",\"addr:city\";false;\"\\t\")][timeout:600];" +
+            "nwr[\"addr:housenumber\"][\"addr:postcode\"]($ADDR_BBOX);out center;"
         val groups = java.util.TreeMap<String, java.util.TreeMap<String, String>>()
-        for (i in 0 until els.length()) {
-            val e = els.getJSONObject(i); val t = e.optJSONObject("tags") ?: continue
-            val pc = t.optString("addr:postcode").replace(" ", "").uppercase(); val street = t.optString("addr:street").trim()
-            if (pc.length != 6 || street.isEmpty()) continue
-            val lat = if (e.has("lat")) e.getDouble("lat") else e.optJSONObject("center")?.getDouble("lat") ?: continue
-            val lon = if (e.has("lon")) e.getDouble("lon") else e.optJSONObject("center")?.getDouble("lon") ?: continue
-            val g = groups.getOrPut("$pc\t$street\t${t.optString("addr:city")}") { java.util.TreeMap() }
-            for (n in t.optString("addr:housenumber").replace(" ", "").split(';')) if (n.isNotEmpty())
-                g[n.uppercase()] = "${Math.round(lat * 1e5)}:${Math.round(lon * 1e5)}"
+        var n = 0
+        overpassLines(q, { m -> progress(0.02, m) }) { line ->
+            val f = line.split('\t')
+            if (f.size < 6) return@overpassLines
+            val lat = f[0].toDoubleOrNull() ?: return@overpassLines; val lon = f[1].toDoubleOrNull() ?: return@overpassLines
+            val pc = f[2].replace(" ", "").uppercase(); val street = f[4].trim()
+            if (pc.length != 6 || street.isEmpty()) return@overpassLines
+            val g = groups.getOrPut("$pc\t$street\t${f[5].trim()}") { java.util.TreeMap() }
+            for (nr in f[3].replace(" ", "").split(';')) if (nr.isNotEmpty()) g[nr.uppercase()] = "${Math.round(lat * 1e5)}:${Math.round(lon * 1e5)}"
+            if (++n % 5000 == 0) progress(0.1 + 0.8 * (1 - 1.0 / (1 + n / 50000.0)), "Addresses: $n…")
         }
+        if (groups.isEmpty()) throw java.io.IOException("no addresses received")
+        progress(0.95, "Saving $n addresses…")
         val tmp = File(addressesFile(ctx).path + ".new")
         java.util.zip.GZIPOutputStream(tmp.outputStream()).bufferedWriter().use { w ->
             for ((k, nums) in groups) { w.write(k); w.write("\t"); w.write(nums.entries.joinToString(";") { "${it.key}:${it.value}" }); w.write("\n") }
         }
         tmp.renameTo(addressesFile(ctx))
-        progress(1.0, "${groups.size} streets indexed")
+        progress(1.0, "$n addresses in ${groups.size} streets")
     }
+
 
     /** Place search index: downloaded copy if present, else the one bundled in the APK. */
     @Volatile var poiError: String? = null
@@ -88,11 +89,7 @@ object MapData {
         val keys = listOf("amenity", "shop", "tourism", "leisure", "office", "craft", "historic", "healthcare")
         val q = "[out:json][timeout:180];(" + keys.joinToString("") { "nwr[name][$it]($b);" } +
             "nwr[name][railway=station]($b);nwr[name][place~\"^(neighbourhood|suburb|quarter|village|hamlet|square|town|city)$\"]($b););out center tags;"
-        val c = URL("https://overpass-api.de/api/interpreter").openConnection() as HttpURLConnection
-        c.connectTimeout = 20000; c.readTimeout = 300_000; c.doOutput = true
-        c.setRequestProperty("User-Agent", "BromNav")
-        c.outputStream.use { it.write(("data=" + java.net.URLEncoder.encode(q, "UTF-8")).toByteArray()) }
-        val json = try { c.inputStream.bufferedReader().readText() } finally { c.disconnect() }
+        val json = overpass(q) { m -> progress(0.05, m) }
         progress(0.7, "Indexing places…")
         val els = org.json.JSONObject(json).getJSONArray("elements")
         val tmp = File(poisFile(ctx).path + ".new")
@@ -168,6 +165,59 @@ object MapData {
         }
     }
 
+    private val OVERPASS = listOf("https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter")
+
+    /**
+     * Overpass query with retries: the public servers often answer 502 / 504 / 429 when busy.
+     * Tries both servers up to 3 rounds with growing pauses.
+     */
+    fun overpass(q: String, status: (String) -> Unit = {}): String {
+        var last: Exception? = null
+        for (round in 0 until 3) for ((i, url) in OVERPASS.withIndex()) {
+            try {
+                val c = URL(url).openConnection() as HttpURLConnection
+                c.connectTimeout = 20000; c.readTimeout = 900_000; c.doOutput = true
+                c.setRequestProperty("User-Agent", "BromNav")
+                c.outputStream.use { it.write(("data=" + java.net.URLEncoder.encode(q, "UTF-8")).toByteArray()) }
+                try {
+                    if (c.responseCode != 200) throw java.io.IOException("OpenStreetMap server busy (HTTP ${c.responseCode})")
+                    return c.inputStream.bufferedReader().readText()
+                } finally { c.disconnect() }
+            } catch (e: Exception) {
+                last = e
+                status("OpenStreetMap server busy — trying again (attempt ${round * OVERPASS.size + i + 2} of ${3 * OVERPASS.size})…")
+                Thread.sleep(5000L * (round + 1))
+            }
+        }
+        throw last ?: java.io.IOException("OpenStreetMap servers unavailable")
+    }
+
+    /** Like [overpass] but hands every line of the answer to [onLine] while it arrives (retries the same way). */
+    fun overpassLines(q: String, status: (String) -> Unit = {}, onLine: (String) -> Unit) {
+        var last: Exception? = null
+        for (round in 0 until 3) for ((i, url) in OVERPASS.withIndex()) {
+            var started = false
+            try {
+                val c = URL(url).openConnection() as HttpURLConnection
+                c.connectTimeout = 20000; c.readTimeout = 900_000; c.doOutput = true
+                c.setRequestProperty("User-Agent", "BromNav")
+                c.outputStream.use { it.write(("data=" + java.net.URLEncoder.encode(q, "UTF-8")).toByteArray()) }
+                try {
+                    if (c.responseCode != 200) throw java.io.IOException("OpenStreetMap server busy (HTTP ${c.responseCode})")
+                    started = true
+                    c.inputStream.bufferedReader().useLines { lines -> lines.forEach(onLine) }
+                    return
+                } finally { c.disconnect() }
+            } catch (e: Exception) {
+                if (started) throw e          // broke off in the middle: the caller's data is incomplete
+                last = e
+                status("OpenStreetMap server busy — trying again (attempt ${round * OVERPASS.size + i + 2} of ${3 * OVERPASS.size})…")
+                Thread.sleep(5000L * (round + 1))
+            }
+        }
+        throw last ?: java.io.IOException("OpenStreetMap servers unavailable")
+    }
+
     /** What a city needs on the phone, in bytes (null = unknown / already there). */
     data class Estimate(val routing: Long, val routingPresent: Long, val map: Long, val places: Long, val exact: Boolean) {
         val toDownload get() = routing + map + places
@@ -189,7 +239,7 @@ object MapData {
                 try { con.contentLengthLong.takeIf { it > 0 } ?: throw java.io.IOException("no size") } finally { con.disconnect() }
             }.getOrElse { exact = false; 200_000_000L }
         }
-        val map = runCatching {
+        val map = if (File(ctx.getExternalFilesDir(null), "tiles/${c.key}.pmtiles").exists()) 0L else runCatching {
             val key = URL("https://build-metadata.protomaps.dev/builds.json").readText()
                 .let { Regex(""""key"\s*:\s*"([^"]+\.pmtiles)"""").findAll(it).last().groupValues[1] }
             PmtilesExtract(PmtilesExtract.HttpSource("https://build.protomaps.com/$key")).estimate(c.mapMinLon, c.mapMinLat, c.mapMaxLon, c.mapMaxLat, MAX_ZOOM)
@@ -202,9 +252,12 @@ object MapData {
     /** Everything for the chosen city: routing tiles still missing, map, places, addresses. */
     fun downloadCity(ctx: Context, progress: (Double, String) -> Unit) {
         downloadRouting(ctx, onlyMissing = true) { f, m -> progress(f * 0.5, m) }
-        downloadMap(ctx) { f, m -> progress(0.5 + f * 0.35, m) }
-        runCatching { downloadPois(ctx) { f, m -> progress(0.85 + f * 0.05, m) } }
-        downloadAddresses(ctx) { f, m -> progress(0.9 + f * 0.1, m) }
+        if (!tilesFile(ctx).exists()) downloadMap(ctx) { f, m -> progress(0.5 + f * 0.35, m) }
+        // the address lookup table is required (receipts, typed addresses offline): without it the
+        // download is not finished and fails; what is already there stays, so a retry only fetches the rest
+        downloadAddresses(ctx) { f, m -> progress(0.85 + f * 0.1, m) }
+        // places (shop / restaurant names) are optional
+        runCatching { downloadPois(ctx) { f, m -> progress(0.95 + f * 0.05, m) } }.onFailure { progress(1.0, "Places later: ${it.message}"); Thread.sleep(1500) }
     }
 
     /** Fresh map: cut the area out of the newest Protomaps world build (range requests, ~90 MB). */

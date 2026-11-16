@@ -92,7 +92,19 @@ object Region {
         restaurantPhoneDigits = p.getString("rPhone", "") ?: ""; restaurantWeb = p.getString("rWeb", "") ?: ""
     }
 
-    fun setCity(ctx: Context, c: City) { city = c; prefs(ctx).edit().putString("city", c.name).apply() }
+    fun setCity(ctx: Context, c: City) {
+        city = c; prefs(ctx).edit().putString("city", c.name).commit()     // commit: the app restarts right after
+        // a restaurant in another city does not belong to this one: delivery mode asks again
+        restaurantPos?.let { p ->
+            if (p.lat !in c.mapMinLat..c.mapMaxLat || p.lon !in c.mapMinLon..c.mapMaxLon) clearRestaurant(ctx)
+        }
+    }
+
+    fun clearRestaurant(ctx: Context) {
+        restaurantName = ""; restaurantPos = null; restaurantPostcode = ""; restaurantHouseNo = ""; restaurantStreet = ""
+        restaurantPhoneDigits = ""; restaurantWeb = ""
+        prefs(ctx).edit().remove("rName").remove("rLatB").remove("rLonB").remove("rPc").remove("rNo").remove("rStreet").remove("rPhone").remove("rWeb").commit()
+    }
 
     fun setRestaurant(ctx: Context, name: String, pos: LatLon, postcode: String, houseNo: String, street: String, phone: String, web: String) {
         restaurantName = name; restaurantPos = pos; restaurantPostcode = postcode.uppercase().replace(" ", "")
@@ -102,7 +114,7 @@ object Region {
         prefs(ctx).edit().putString("rName", name)
             .putLong("rLatB", java.lang.Double.doubleToRawLongBits(pos.lat)).putLong("rLonB", java.lang.Double.doubleToRawLongBits(pos.lon))
             .putString("rPc", restaurantPostcode).putString("rNo", houseNo).putString("rStreet", street)
-            .putString("rPhone", restaurantPhoneDigits).putString("rWeb", restaurantWeb).apply()
+            .putString("rPhone", restaurantPhoneDigits).putString("rWeb", restaurantWeb).commit()
     }
 
     /** for tests */

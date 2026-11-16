@@ -96,6 +96,8 @@ Groningen area, so it works without a PC and without mobile data.
   (server size), map (exact, from the PMTiles directories), places and addresses. Then it downloads
   them. The first time delivery mode opens, you set up your restaurant (search by name or address;
   optional phone / website as printed on the receipts, so its header is never taken for a customer).
+  Cities can be deleted from the phone again to free space (only routing tiles no other city
+  needs are removed). Settings → Start-up mode: ask each time / simple nav / delivery / last used.
 - `wabisabi`: Groningen and Wabi-Sabi built in (the version used on the shifts).
 - `main`: the last pushed state before the UI redesign.
 

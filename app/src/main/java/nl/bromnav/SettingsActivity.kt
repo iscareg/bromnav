@@ -86,6 +86,14 @@ class SettingsActivity : AppCompatActivity() {
             if (simple) "Receipts, multi-stop runs, stats" else "Search a place or address and go; no stats") {
             finishWith(if (simple) "mode_delivery" else "mode_simple")
         }
+        val modes = listOf("ask" to "Ask each time", "simple" to "Simple navigation", "delivery" to "Delivery", "last" to "Last used mode")
+        val sm = getSharedPreferences("settings", MODE_PRIVATE).getString("startMode", "ask")
+        row("🚀", "Start-up mode", modes.firstOrNull { it.first == sm }?.second ?: "Ask each time") {
+            Ui.dialog(this).setTitle("When the app starts")
+                .setSingleChoiceItems(modes.map { it.second }.toTypedArray(), modes.indexOfFirst { it.first == sm }) { d, w ->
+                    d.dismiss(); getSharedPreferences("settings", MODE_PRIVATE).edit().putString("startMode", modes[w].first).apply(); build()
+                }.show()
+        }
         row("🌓", "Theme", when (Pal.choice(this)) { "dark" -> "Dark"; "light" -> "Light"; else -> "Automatic (follows the phone)" }) { chooseTheme() }
         val book = PdokGeocoder.book
         row("ℹ", "About", "BromNav ${BuildConfig.VERSION_NAME} · offline addresses: " + (book?.let { "${it.groupCount} streets" } ?: "loading…")) {}

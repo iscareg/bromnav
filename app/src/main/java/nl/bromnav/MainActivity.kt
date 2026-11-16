@@ -202,7 +202,17 @@ class MainActivity : AppCompatActivity(), LocationListener {
 
         buildUi(savedInstanceState, tiles)
         val restoredMode = savedInstanceState?.getString("appMode")
-        if (restoredMode != null) { simple = restoredMode == "simple"; restoreState(savedInstanceState); refreshAll() } else showModeChooser()
+        if (restoredMode != null) { simple = restoredMode == "simple"; restoreState(savedInstanceState); refreshAll() }
+        else {
+            // start-up mode (Settings): ask, simple nav, delivery, or the mode used last time
+            val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+            when (prefs.getString("startMode", "ask")) {
+                "simple" -> setAppMode(true)
+                "delivery" -> setAppMode(false)
+                "last" -> prefs.getString("lastMode", null)?.let { setAppMode(it == "simple") } ?: showModeChooser()
+                else -> showModeChooser()
+            }
+        }
         if (BuildConfig.DEBUG_TOOLS) DebugBridge.register(this)
         NoteTranslator.ensureModel(wifiOnly = true)
         requestLocation()
@@ -609,6 +619,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
     }
 
     private fun setAppMode(s: Boolean) {
+        getSharedPreferences("settings", MODE_PRIVATE).edit().putString("lastMode", if (s) "simple" else "delivery").apply()
         if (!s && !Region.hasRestaurant) ui.post { restaurantSetup(first = true) }
         chooser?.dismiss(); chooser = null
         if (mode == Mode.NAV) endNav()

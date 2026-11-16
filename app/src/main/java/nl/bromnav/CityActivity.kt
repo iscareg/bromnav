@@ -54,7 +54,20 @@ class CityActivity : AppCompatActivity() {
     private fun bundled(c: City) = c.name == "Groningen" && runCatching { assets.list("mapdata")?.contains("groningen.pmtiles") == true }.getOrDefault(false)
 
     private fun installed(c: City) = bundled(c) || c.segments().all { File(MapData.segDir(this), "$it.rd5").exists() } &&
-        File(getExternalFilesDir(null), "tiles/${c.key}.pmtiles").exists()
+        File(getExternalFilesDir(null), "tiles/${c.key}.pmtiles").exists() &&
+        (File(getExternalFilesDir(null), "${c.key}_${MapData.ADDR_NAME}").exists() || (c.name == "Groningen" && builtInAddresses()))
+
+    /** the APK carries Groningen's address book and places */
+    private fun builtInAddresses() = runCatching { assets.list("")?.any { it.startsWith(MapData.ADDR_NAME.removeSuffix(".gz")) } == true }.getOrDefault(false)
+
+    /** files only this city uses: its map, places, addresses, and routing tiles no other city on the phone needs */
+    private fun cityFiles(c: City): List<File> {
+        val dir = getExternalFilesDir(null)!!
+        val own = listOf(File(dir, "tiles/${c.key}.pmtiles"), File(dir, "${c.key}_${MapData.ADDR_NAME}"), File(dir, "${c.key}_${MapData.POIS_NAME}"))
+        val othersNeed = Cities.all.filter { it != c && (it == Region.city || File(dir, "tiles/${it.key}.pmtiles").exists()) }.flatMap { it.segments() }.toSet()
+        val segs = c.segments().filter { it !in othersNeed }.map { File(MapData.segDir(this), "$it.rd5") }
+        return (own + segs).filter { it.exists() }
+    }
 
     private fun cityCard(c: City, current: Boolean): View {
         val card = Ui.card(this, 18, 1).apply { isClickable = true }
@@ -68,6 +81,16 @@ class CityActivity : AppCompatActivity() {
         val detail = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = if (openCity == c) View.VISIBLE else View.GONE; setPadding(0, dp(8), 0, 0) }
         box.addView(detail)
         card.addView(box)
+        // data of another city on the phone: can be deleted to free space
+        val files = if (current) emptyList() else cityFiles(c)
+        if (files.isNotEmpty()) {
+            val size = files.sumOf { it.length() }
+            box.addView(Ui.chip(this, "🗑 Delete from phone (${fmt(size)})", Ui.Tone.RED) {
+                Ui.dialog(this).setMessage("Delete the offline data of ${c.name} (${fmt(size)})? You can download it again later.")
+                    .setPositiveButton("Delete") { _, _ -> files.forEach { it.delete() }; android.widget.Toast.makeText(this, "${c.name} deleted", android.widget.Toast.LENGTH_SHORT).show(); build() }
+                    .setNegativeButton("Cancel", null).show()
+            }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(6) })
+        }
         card.setOnClickListener {
             if (busy) return@setOnClickListener
             if (detail.visibility == View.VISIBLE) { detail.visibility = View.GONE; openCity = null; return@setOnClickListener }
@@ -87,8 +110,9 @@ class CityActivity : AppCompatActivity() {
                     if (isFinishing || openCity != c) return@post
                     detail.removeAllViews()
                     val chips = Ui.flex(this, 6, center = false)
-                    chips.addView(Ui.chip(this, "🧭 routing ${fmt(e.routing)}" + if (e.routingPresent > 0) " (+${fmt(e.routingPresent)} already here)" else "", Ui.Tone.NEUTRAL))
-                    chips.addView(Ui.chip(this, "🗺 map ${fmt(e.map)}", Ui.Tone.NEUTRAL))
+                    chips.addView(if (e.routing == 0L) Ui.chip(this, "🧭 routing ✓ on phone", Ui.Tone.GREEN)
+                        else Ui.chip(this, "🧭 routing ${fmt(e.routing)}" + if (e.routingPresent > 0) " (+${fmt(e.routingPresent)} already here)" else "", Ui.Tone.NEUTRAL))
+                    chips.addView(if (e.map == 0L) Ui.chip(this, "🗺 map ✓ on phone", Ui.Tone.GREEN) else Ui.chip(this, "🗺 map ${fmt(e.map)}", Ui.Tone.NEUTRAL))
                     chips.addView(Ui.chip(this, "🏠 places + addresses ≈ ${fmt(e.places)}", Ui.Tone.NEUTRAL))
                     detail.addView(chips)
                     val free = getExternalFilesDir(null)!!.usableSpace
