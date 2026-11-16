@@ -38,12 +38,15 @@ class AddressBook private constructor(private val groups: List<Group>) {
     val groupCount get() = groups.size
 
     /** "Proefstraat 9a": the address closest to [p] (within ~300 m), or null */
-    fun nearest(p: LatLon): String? {
-        var best: String? = null; var bestD = 300.0
+    fun nearest(p: LatLon): String? = nearestAddress(p)?.let { "${it.street} ${it.houseNo}" }
+
+    /** the address closest to [p] within [maxM] metres */
+    fun nearestAddress(p: LatLon, maxM: Double = 300.0): PdokGeocoder.Address? {
+        var best: PdokGeocoder.Address? = null; var bestD = maxM
         for (g in groups) {
             val f = g.firstPos ?: continue
             if (Math.abs(f.lat - p.lat) > 0.012 || Math.abs(f.lon - p.lon) > 0.02) continue   // streets are < ~1.3 km
-            for ((n, pos) in g.numbers) { val d = Geo.dist(p, pos); if (d < bestD) { bestD = d; best = "${g.street} ${n.lowercase()}" } }
+            for ((n, pos) in g.numbers) { val d = Geo.dist(p, pos); if (d < bestD) { bestD = d; best = g.address(n, pos) } }
         }
         return best
     }

@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class LogicTest {
+    init { TestRegion.wabiSabi() }
     @Test fun stars() {
         assertEquals(5, Urgency.stars(600.0, 500.0))   // already later than ETA
         assertEquals(4, Urgency.stars(600.0, 600.0))   // exactly on ETA

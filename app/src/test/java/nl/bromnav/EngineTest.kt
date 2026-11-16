@@ -11,6 +11,7 @@ import java.io.File
 
 /** Embedded routing with the real Groningen data on this PC (skipped when the data is absent). */
 class EngineTest {
+    init { TestRegion.wabiSabi() }
     private val home = File(System.getProperty("user.home"), "bromnav")
     private val seg = File(home, "data/segments")
     private val profile = File(home, "app/src/main/assets/profiles/bromfiets.brf")

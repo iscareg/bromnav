@@ -69,36 +69,7 @@ class PmtilesExtract(private val src: RangeSource) {
     /** progress(fraction 0..1, message) */
     fun extract(out: File, minLon: Double, minLat: Double, maxLon: Double, maxLat: Double, maxZoom: Int,
                 progress: (Double, String) -> Unit = { _, _ -> }) {
-        val head = src.read(0, 16384)
-        val h = parseHeader(head)
-        val root = parseDir(decomp(if (h.rootOff + h.rootLen <= head.size) head.copyOfRange(h.rootOff.toInt(), (h.rootOff + h.rootLen).toInt())
-                                   else src.read(h.rootOff, h.rootLen.toInt()), h.internalComp))
-        val zMax = minOf(maxZoom, h.maxZoom)
-
-        // 1. tile ids inside the box, all zooms
-        val ids = ArrayList<Long>()
-        for (z in h.minZoom..zMax) {
-            val (x0, y0) = lonLatToTile(minLon, maxLat, z); val (x1, y1) = lonLatToTile(maxLon, minLat, z)
-            for (x in x0..x1) for (y in y0..y1) ids.add(zxyToId(z, x, y))
-        }
-        ids.sort()
-        progress(0.02, "Finding ${ids.size} tiles…")
-
-        // 2. resolve each id to (offset, length) through root + leaf directories (leaves cached)
-        val leafCache = HashMap<Long, List<Entry>>()
-        val found = ArrayList<Pair<Long, Entry>>()   // tileId -> content entry
-        for ((k, id) in ids.withIndex()) {
-            var dir = root; var e: Entry? = null
-            for (depth in 0 until 4) {
-                e = find(dir, id) ?: break
-                if (e.runLength > 0) break
-                val leaf = e
-                dir = leafCache.getOrPut(leaf.offset) { parseDir(decomp(src.read(h.leafOff + leaf.offset, leaf.length), h.internalComp)) }
-                e = null
-            }
-            if (e != null && e.runLength > 0) found.add(id to e)
-            if (k % 2000 == 0) progress(0.02 + 0.08 * k / ids.size, "Reading directories… ${leafCache.size} parts")
-        }
+        val (h, found, zMax) = findTiles(minLon, minLat, maxLon, maxLat, maxZoom, progress)
 
         // 3. download unique tile contents in merged range requests, write them to a temp file
         val contents = found.map { it.second.offset to it.second.length }.distinct().sortedBy { it.first }
@@ -153,6 +124,49 @@ class PmtilesExtract(private val src: RangeSource) {
         }
         tmp.delete()
         progress(1.0, "Map ready: ${found.size} tiles, ${out.length() / 1_000_000} MB")
+    }
+
+    /** steps 1 + 2: the tiles inside the box and where their data is (directories only, no tile data) */
+    private fun findTiles(minLon: Double, minLat: Double, maxLon: Double, maxLat: Double, maxZoom: Int,
+                          progress: (Double, String) -> Unit): Triple<Header, List<Pair<Long, Entry>>, Int> {
+        val head = src.read(0, 16384)
+        val h = parseHeader(head)
+        val root = parseDir(decomp(if (h.rootOff + h.rootLen <= head.size) head.copyOfRange(h.rootOff.toInt(), (h.rootOff + h.rootLen).toInt())
+                                   else src.read(h.rootOff, h.rootLen.toInt()), h.internalComp))
+        val zMax = minOf(maxZoom, h.maxZoom)
+
+        // 1. tile ids inside the box, all zooms
+        val ids = ArrayList<Long>()
+        for (z in h.minZoom..zMax) {
+            val (x0, y0) = lonLatToTile(minLon, maxLat, z); val (x1, y1) = lonLatToTile(maxLon, minLat, z)
+            for (x in x0..x1) for (y in y0..y1) ids.add(zxyToId(z, x, y))
+        }
+        ids.sort()
+        progress(0.02, "Finding ${ids.size} tiles…")
+
+        // 2. resolve each id to (offset, length) through root + leaf directories (leaves cached)
+        val leafCache = HashMap<Long, List<Entry>>()
+        val found = ArrayList<Pair<Long, Entry>>()   // tileId -> content entry
+        for ((k, id) in ids.withIndex()) {
+            var dir = root; var e: Entry? = null
+            for (depth in 0 until 4) {
+                e = find(dir, id) ?: break
+                if (e.runLength > 0) break
+                val leaf = e
+                dir = leafCache.getOrPut(leaf.offset) { parseDir(decomp(src.read(h.leafOff + leaf.offset, leaf.length), h.internalComp)) }
+                e = null
+            }
+            if (e != null && e.runLength > 0) found.add(id to e)
+            if (k % 2000 == 0) progress(0.02 + 0.08 * k / ids.size, "Reading directories… ${leafCache.size} parts")
+        }
+
+        return Triple(h, found, zMax)
+    }
+
+    /** Size of the cut-out map in bytes (reads only the directories: a few requests). */
+    fun estimate(minLon: Double, minLat: Double, maxLon: Double, maxLat: Double, maxZoom: Int): Long {
+        val (_, found, _) = findTiles(minLon, minLat, maxLon, maxLat, maxZoom) { _, _ -> }
+        return found.map { it.second.offset to it.second.length }.distinct().sumOf { it.second.toLong() } + 64 * 1024
     }
 
     // ------------------------------------------------------------------ format helpers

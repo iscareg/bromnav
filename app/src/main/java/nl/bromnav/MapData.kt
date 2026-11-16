@@ -12,23 +12,31 @@ import java.net.URL
  */
 object MapData {
     /** BRouter 5°x5° segments covering the area (Groningen = E5_N50). */
-    val SEGMENTS = listOf("E5_N50")
+    private val city get() = Region.city ?: Cities.byName("Groningen")!!
+    /** routing tiles of the chosen city */
+    val SEGMENTS get() = city.segments()
     const val SEGMENT_URL = "https://brouter.de/brouter/segments4/"
-    const val TILES_NAME = "groningen.pmtiles"
+    val TILES_NAME get() = "${city.key}.pmtiles"
     /** Map area (lon/lat) and max zoom of the offline map. */
-    const val MIN_LON = 6.15; const val MIN_LAT = 52.95; const val MAX_LON = 7.25; const val MAX_LAT = 53.55
+    val MIN_LON get() = city.mapMinLon; val MIN_LAT get() = city.mapMinLat; val MAX_LON get() = city.mapMaxLon; val MAX_LAT get() = city.mapMaxLat
     const val MAX_ZOOM = 15
 
     const val POIS_NAME = "pois.tsv.gz"
     const val ADDR_NAME = "addresses.tsv.gz"
     /** offline address book area (Groningen municipality incl. Haren / Ten Boer) */
-    const val ADDR_BBOX = "53.10,6.40,53.33,6.82"
-    fun addressesFile(ctx: Context) = File(ctx.getExternalFilesDir(null), ADDR_NAME)
+    val ADDR_BBOX get() = "${city.minLat},${city.minLon},${city.maxLat},${city.maxLon}"
+    /** the data bundled in the APK (places, addresses, release map) is for Groningen only */
+    private val bundledCity get() = city.name == "Groningen"
+    fun addressesFile(ctx: Context) = File(ctx.getExternalFilesDir(null), "${city.key}_$ADDR_NAME")
+    fun poisFile(ctx: Context) = File(ctx.getExternalFilesDir(null), "${city.key}_$POIS_NAME")
 
     /** Offline address book: downloaded copy if present, else the one bundled in the APK. */
     fun openAddresses(ctx: Context): AddressBook? = runCatching {
         val f = addressesFile(ctx)
+        val old = File(ctx.getExternalFilesDir(null), ADDR_NAME)
+        if (bundledCity && !f.exists() && old.exists()) old.renameTo(f)
         if (f.exists()) f.inputStream().use { AddressBook.load(it) }
+        else if (!bundledCity) null
         else (runCatching { ctx.assets.open(ADDR_NAME) }.getOrNull() ?: ctx.assets.open(ADDR_NAME.removeSuffix(".gz"))).use { AddressBook.load(it) }
     }.onFailure { android.util.Log.w("BromNav", "addresses", it) }.getOrNull()
 
@@ -61,13 +69,15 @@ object MapData {
         tmp.renameTo(addressesFile(ctx))
         progress(1.0, "${groups.size} streets indexed")
     }
-    fun poisFile(ctx: Context) = File(ctx.getExternalFilesDir(null), POIS_NAME)
 
     /** Place search index: downloaded copy if present, else the one bundled in the APK. */
     @Volatile var poiError: String? = null
     fun openPois(ctx: Context): PoiIndex? = runCatching {
         val f = poisFile(ctx)
+        val old = File(ctx.getExternalFilesDir(null), POIS_NAME)
+        if (bundledCity && !f.exists() && old.exists()) old.renameTo(f)
         if (f.exists()) f.inputStream().use { PoiIndex.load(it) }
+        else if (!bundledCity) null
         else (runCatching { ctx.assets.open(POIS_NAME) }.getOrNull() ?: ctx.assets.open(POIS_NAME.removeSuffix(".gz"))).use { PoiIndex.load(it) }
     }.onFailure { poiError = it.toString() }.getOrNull()
 
@@ -133,10 +143,11 @@ object MapData {
         progress(1.0, "Offline maps installed")
     }
 
-    /** Fresh routing data (BRouter rebuilds the segments weekly from OpenStreetMap). */
-    fun downloadRouting(ctx: Context, progress: (Double, String) -> Unit) {
+    /** Fresh routing data (BRouter rebuilds the segments weekly from OpenStreetMap). [onlyMissing]: keep tiles already there. */
+    fun downloadRouting(ctx: Context, onlyMissing: Boolean = false, progress: (Double, String) -> Unit) {
         for ((i, seg) in SEGMENTS.withIndex()) {
             val dst = File(segDir(ctx), "$seg.rd5"); val tmp = File(dst.path + ".new")
+            if (onlyMissing && dst.exists()) continue
             val c = URL(SEGMENT_URL + "$seg.rd5").openConnection() as HttpURLConnection
             c.connectTimeout = 15000; c.readTimeout = 60000; c.setRequestProperty("User-Agent", "BromNav")
             try {
@@ -155,6 +166,45 @@ object MapData {
             } finally { c.disconnect() }
             tmp.renameTo(dst)
         }
+    }
+
+    /** What a city needs on the phone, in bytes (null = unknown / already there). */
+    data class Estimate(val routing: Long, val routingPresent: Long, val map: Long, val places: Long, val exact: Boolean) {
+        val toDownload get() = routing + map + places
+    }
+
+    /**
+     * Download size of [c]: routing tiles from the server's file sizes, the map from the PMTiles
+     * directories (exact, a few small requests), places + addresses from the area. Blocking; falls
+     * back to rough numbers without internet.
+     */
+    fun estimate(ctx: Context, c: City): Estimate {
+        var routing = 0L; var present = 0L; var exact = true
+        for (seg in c.segments()) {
+            val f = File(segDir(ctx), "$seg.rd5")
+            if (f.exists()) { present += f.length(); continue }
+            routing += runCatching {
+                val con = URL(SEGMENT_URL + "$seg.rd5").openConnection() as HttpURLConnection
+                con.requestMethod = "HEAD"; con.connectTimeout = 8000; con.readTimeout = 8000; con.setRequestProperty("User-Agent", "BromNav")
+                try { con.contentLengthLong.takeIf { it > 0 } ?: throw java.io.IOException("no size") } finally { con.disconnect() }
+            }.getOrElse { exact = false; 200_000_000L }
+        }
+        val map = runCatching {
+            val key = URL("https://build-metadata.protomaps.dev/builds.json").readText()
+                .let { Regex(""""key"\s*:\s*"([^"]+\.pmtiles)"""").findAll(it).last().groupValues[1] }
+            PmtilesExtract(PmtilesExtract.HttpSource("https://build.protomaps.com/$key")).estimate(c.mapMinLon, c.mapMinLat, c.mapMaxLon, c.mapMaxLat, MAX_ZOOM)
+        }.getOrElse { exact = false; (c.mapAreaKm2 * 20_000).toLong() }
+        // addresses ~1.8 kB/km² of municipality, places ~0.1 kB/km² of map area (measured for Groningen)
+        val places = (c.areaKm2 * 1800 + c.mapAreaKm2 * 100).toLong()
+        return Estimate(routing, present, map, places, exact)
+    }
+
+    /** Everything for the chosen city: routing tiles still missing, map, places, addresses. */
+    fun downloadCity(ctx: Context, progress: (Double, String) -> Unit) {
+        downloadRouting(ctx, onlyMissing = true) { f, m -> progress(f * 0.5, m) }
+        downloadMap(ctx) { f, m -> progress(0.5 + f * 0.35, m) }
+        runCatching { downloadPois(ctx) { f, m -> progress(0.85 + f * 0.05, m) } }
+        downloadAddresses(ctx) { f, m -> progress(0.9 + f * 0.1, m) }
     }
 
     /** Fresh map: cut the area out of the newest Protomaps world build (range requests, ~90 MB). */

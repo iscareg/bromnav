@@ -9,6 +9,7 @@ import org.junit.Test
 
 /** Synthetic receipts (made-up people/addresses) in the real layouts. */
 class ReceiptParserTest {
+    init { TestRegion.wabiSabi() }
 
     private fun lines(vararg t: String) = t.mapIndexed { i, s -> Line(s, 0, i * 40, 400, i * 40 + 30) }
 

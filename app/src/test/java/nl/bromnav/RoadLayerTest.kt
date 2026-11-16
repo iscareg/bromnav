@@ -7,6 +7,7 @@ import java.io.File
 
 /** Uses the real routing data on this PC (skipped if absent). */
 class RoadLayerTest {
+    init { TestRegion.wabiSabi() }
     private val home = File(System.getProperty("user.home"), "bromnav")
     private val seg = File(home, "data/segments")
     private val profile = File(home, "app/src/main/assets/profiles/bromfiets.brf")

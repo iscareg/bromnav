@@ -24,6 +24,7 @@
             </intent-filter>
         </activity>
         <activity android:name=".ScanActivity" android:screenOrientation="portrait" android:theme="@style/Theme.BromNav" />
+        <activity android:name=".CityActivity" android:label="City" android:screenOrientation="portrait" />
         <activity android:name=".RoadCorrectionsActivity" android:label="Road corrections" android:screenOrientation="portrait" />
         <activity android:name=".SettingsActivity" android:label="Settings" android:screenOrientation="portrait" />
         <activity android:name=".StatsActivity" android:label="Stats" android:screenOrientation="portrait" />

@@ -180,6 +180,9 @@ class MainActivity : AppCompatActivity(), LocationListener {
         deliveryHistory = SearchHistory(this, "search_history_delivery")
         voice = VoiceGuide(this)
 
+        Region.load(this)
+        // first start: choose the city to work in (its maps are downloaded there)
+        if (!Region.hasCity) { startActivity(Intent(this, CityActivity::class.java).putExtra(CityActivity.EXTRA_FIRST, true)); finish(); return }
         val files = getExternalFilesDir(null)!!
         val segDir = MapData.segDir(this)
         val tiles = MapData.tilesFile(this)
@@ -256,6 +259,12 @@ class MainActivity : AppCompatActivity(), LocationListener {
             runMapJob("Setting up offline maps", restart = true) { p -> MapData.installBundled(this, p) }
             return
         }
+        // the chosen city's data is not on the phone: download it there
+        startActivity(Intent(this, CityActivity::class.java).putExtra(CityActivity.EXTRA_FIRST, true)); finish()
+    }
+
+    @Suppress("unused")
+    private fun showSetupManual(files: File) {
         val col = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(dp(32), dp(48), dp(32), dp(24))
             setBackgroundColor(Pal.page)
@@ -549,7 +558,58 @@ class MainActivity : AppCompatActivity(), LocationListener {
         chooser = Ui.dialog(this).setView(box).setCancelable(false).show()
     }
 
+    /**
+     * Your restaurant: start and end of every run, and its address in the receipt header is never
+     * taken for a customer. Asked the first time delivery mode opens; changeable in Settings.
+     */
+    private fun restaurantSetup(first: Boolean = false) {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(22), dp(8), dp(22), 0) }
+        box.addView(Ui.text(this, 15f, Ui.c(Pal.sub)).apply {
+            text = (if (first) "Delivery mode needs your restaurant: every run starts and ends there, and its address on the receipts is never taken for a customer.\n\n" else "") +
+                "Search the restaurant by name or address."
+        })
+        var pos = Region.restaurantPos; var street = Region.restaurantStreet; var no = Region.restaurantHouseNo; var pc = Region.restaurantPostcode
+        val addrBtn = Ui.tonal(this, if (pos != null) "📍 $street $no, $pc  (change)" else "📍 Choose the restaurant…", Ui.Tone.BLUE) {}
+        val nameEt = EditText(this).apply { hint = "Name (shown in the app)"; setText(Region.restaurantName); isSingleLine = true }
+        val phoneEt = EditText(this).apply { hint = "Phone number on the receipt (optional)"; inputType = InputType.TYPE_CLASS_PHONE; setText(Region.restaurantPhoneDigits) }
+        val webEt = EditText(this).apply { hint = "Website on the receipt (optional)"; isSingleLine = true; setText(Region.restaurantWeb) }
+        addrBtn.setOnClickListener {
+            AddressSearch.show(this, "Your restaurant", history = emptyList(), pois = pois, places = true, near = here() ?: Config.RESTAURANT) { a ->
+                val isPlace = a.label.contains(" · ")
+                pos = a.pos; street = a.street; no = a.houseNo
+                pc = Regex("""\d{4}\s?[A-Z]{2}""").find(a.label)?.value?.replace(" ", "") ?: ""
+                if (isPlace) {
+                    // a place from the map: name from the place, the address from the address book (nearest address
+                    // to the place, or the place's own street + number when the map has them)
+                    if (nameEt.text.isEmpty()) nameEt.setText(a.street)       // (for places, street holds the name)
+                    val p = a.label.substringAfter(" · ").substringBefore(" · ")
+                    val book = PdokGeocoder.book
+                    val byAddr = Regex("""^(.*?)\s+(\d+\S*)""").find(p)?.let { m -> book?.search("${m.groupValues[1]} ${m.groupValues[2]}", a.pos, 1)?.firstOrNull() }
+                    val b = byAddr ?: book?.nearestAddress(a.pos, 80.0)
+                    if (b != null) { pc = Regex("""\d{4}[A-Z]{2}""").find(b.label)?.value ?: ""; street = b.street; no = b.houseNo }
+                    else { street = ""; no = ""; pc = "" }
+                }
+                addrBtn.text = "📍 $street $no${if (pc.isNotEmpty()) ", $pc" else ""}  (change)"
+            }
+        }
+        listOf<View>(addrBtn, nameEt, phoneEt, webEt).forEach { box.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) }) }
+        val dlg = Ui.dialog(this).setTitle("🍽  Your restaurant").setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Save", null).setNegativeButton(if (first) "Later" else "Cancel", null).create()
+        dlg.setOnShowListener {
+            dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val p = pos
+                if (p == null) { toast("Choose the restaurant's address first"); return@setOnClickListener }
+                Region.setRestaurant(this, nameEt.text.toString().trim().ifEmpty { "$street $no" }, p, pc, no, street, phoneEt.text.toString(), webEt.text.toString())
+                dlg.dismiss(); toast("Restaurant saved: ${Config.RESTAURANT_NAME}")
+                lastEtaCalc = 0; refreshAll(); warmPlanner()
+                if (mode == Mode.PLAN) map?.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(p.lat, p.lon), PLAN_ZOOM))
+            }
+        }
+        dlg.show()
+    }
+
     private fun setAppMode(s: Boolean) {
+        if (!s && !Region.hasRestaurant) ui.post { restaurantSetup(first = true) }
         chooser?.dismiss(); chooser = null
         if (mode == Mode.NAV) endNav()
         simple = s
@@ -601,6 +661,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             "mode_simple" -> setAppMode(true)
             "mode_delivery" -> setAppMode(false)
             "simulate" -> if (simulating) stopSimulation() else simulate()
+            "restaurant" -> restaurantSetup()
             "goto" -> res.data?.getStringExtra(RoadCorrectionsActivity.EXTRA_GOTO)?.split(',')?.let { k ->
                 val e = RoadOverrides.get(k[0].toLong(), k[1].toLong()) ?: return@let
                 val mid = e.geom[e.geom.size / 2]
@@ -1552,7 +1613,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
             setGeoJson("nogos", """{"type":"FeatureCollection","features":[${store.nogos.joinToString(",") { pt(it.p, "", "#d93025") }}]}""")
             return
         }
-        f.add(pt(Config.RESTAURANT, "W", "#202020"))
+        if (Region.hasRestaurant) f.add(pt(Config.RESTAURANT, Config.RESTAURANT_NAME.take(1).uppercase(), "#202020"))
         // map markers carry the order number (last 3 digits), or the position in the run without one
         store.pending().forEachIndexed { i, s -> f.add(pt(s.pos, if (s.orderNo.isNotEmpty()) s.orderShort() else "${i + 1}", String.format("#%06X", 0xFFFFFF and urgencyColor(s)))) }
         setGeoJson("stops", """{"type":"FeatureCollection","features":[${f.joinToString(",")}]}""")
@@ -1676,6 +1737,7 @@ class MainActivity : AppCompatActivity(), LocationListener {
         val o = org.json.JSONObject()
         o.put("vehicle", Vehicle.current.short).put("roadOverrides", RoadOverrides.all().size).put("showLegal", showLegal).put("editRoads", editRoads)
             .put("roadLayerMs", roadLayer?.lastLoadMs)
+        o.put("city", Region.city?.name).put("restaurant", if (Region.hasRestaurant) "${Region.restaurantName} ${Region.restaurantPostcode} ${Region.restaurantHouseNo}" else null)
         o.put("appMode", if (simple) "simple" else "delivery").put("chooserOpen", chooser != null)
             .put("searchHistory", org.json.JSONArray(searchHistory.all().take(5).map { it.label }))
         o.put("mode", mode.name).put("simulating", simulating).put("listOpen", listOpen).put("manualOrder", store.manualOrder)

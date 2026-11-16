@@ -59,6 +59,12 @@ class SettingsActivity : AppCompatActivity() {
             setPadding(0, dp(8), 0, dp(8))
         })
 
+        section("Where you work")
+        row("🏙", "City & offline maps", Region.city?.name ?: "not chosen") { startActivity(Intent(this, CityActivity::class.java)) }
+        row("🍽", "Restaurant", if (Region.hasRestaurant) "${Region.restaurantName} · ${Region.restaurantStreet} ${Region.restaurantHouseNo}" else "not set up · tap to choose") {
+            finishWith("restaurant")
+        }
+
         section("Delivery")
         row("🔀", "Auto order priority", OrderMode.current.label) { chooseOrderMode() }
         row(Vehicle.current.icon, "Vehicle", Vehicle.current.label) { chooseVehicle() }

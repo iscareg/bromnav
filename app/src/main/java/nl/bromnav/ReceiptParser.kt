@@ -98,8 +98,9 @@ object ReceiptParser {
             CUSTOMER.matches(ls[h].text) && (ls[i].bottom == 0 || (ls[h].left < ls[i].right && ls[h].right > ls[i].left))
         }
         // the restaurant block: followed by its phone number / website
+        val rPhone = Config.RESTAURANT_PHONE_DIGITS; val rWeb = Config.RESTAURANT_WEB
         fun restaurantBlock(i: Int) = (i + 1..minOf(ls.size - 1, i + 3)).any { k ->
-            ls[k].text.filter(Char::isDigit).contains(Config.RESTAURANT_PHONE_DIGITS) || ls[k].text.lowercase().contains(Config.RESTAURANT_WEB)
+            (rPhone.length >= 6 && ls[k].text.filter(Char::isDigit).contains(rPhone)) || (rWeb.length >= 4 && ls[k].text.lowercase().contains(rWeb))
         }
         // two receipts in view: the one in the middle of the picture is meant
         val midX = if (ls.all { it.bottom == 0 }) 0.0 else (ls.minOf { it.left } + ls.maxOf { it.right }) / 2.0
@@ -233,10 +234,16 @@ object ReceiptParser {
     /** The restaurant's own address (printed in the receipt header). */
     fun isRestaurant(postcode: String, houseNo: String, street: String? = null): Boolean {
         val base = Regex("""^\d+""").find(houseNo)?.value
-        if (postcode == Config.RESTAURANT_POSTCODE && base == Config.RESTAURANT_HOUSENO) return true
-        // misread restaurant header ("9711AE 60", "Schuitendiep 0"): restaurant street + 9711 postcode + a number like 60
-        return street != null && PoiIndex.lev(PoiIndex.norm(street), Config.RESTAURANT_STREET.lowercase(), Config.RESTAURANT_STREET.length, 2) <= 2 &&
-            postcode.startsWith(Config.RESTAURANT_POSTCODE.take(4)) && (base == null || base.length <= 2 && (base.contains('6') || base == "0"))
+        if (Config.RESTAURANT_POSTCODE.isEmpty()) return false              // restaurant not set up yet
+        val rBase = Regex("""^\d+""").find(Config.RESTAURANT_HOUSENO)?.value
+        if (postcode == Config.RESTAURANT_POSTCODE && base != null && base == rBase) return true
+        if (Config.RESTAURANT_STREET.isEmpty()) return false
+        // misread restaurant header ("9711AE 60", "Schuitendiep 0"): its street + the same 4 postcode digits + a number
+        // that is (almost) its own number
+        val rs = PoiIndex.norm(Config.RESTAURANT_STREET); val rn = rBase ?: ""
+        return street != null && PoiIndex.lev(PoiIndex.norm(street), rs, rs.length, 2) <= 2 &&
+            postcode.startsWith(Config.RESTAURANT_POSTCODE.take(4)) &&
+            (base == null || base == rn || (rn.isNotEmpty() && (rn.startsWith(base) || PoiIndex.lev(base, rn, rn.length, 1) <= 1)))
     }
 
     /** index of the "Street 12a" line belonging to postcode line [pcIdx], or -1 */

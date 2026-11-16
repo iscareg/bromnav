@@ -8,6 +8,7 @@ import org.junit.Test
 import java.io.File
 
 class AddressBookTest {
+    init { TestRegion.wabiSabi() }
     private val book = AddressBook.load("""
         9745CS	Proefstraat	Groningen	7:5320857:657178;9:5320854:657163;9A:5320857:657170
         9795KV	Proefweg	Groningen	44:5321100:654000;46:5321110:654010

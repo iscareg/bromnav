@@ -1,18 +1,22 @@
 package nl.bromnav
 
+/**
+ * Values that depend on where you work come from [Region] (chosen city + your restaurant, set up on
+ * the phone); the rest are fixed.
+ */
 object Config {
-    /** Wabi-Sabi, Schuitendiep, Groningen — start and end of every run (hard-coded for now). */
-    val RESTAURANT = LatLon(53.2182246, 6.5734317)
-    const val RESTAURANT_NAME = "Wabi-Sabi"
-    /** the restaurant's address as printed in every receipt header (never a customer address) */
-    const val RESTAURANT_POSTCODE = "9711RE"
-    const val RESTAURANT_HOUSENO = "60"
-    const val RESTAURANT_STREET = "Schuitendiep"
-    const val RESTAURANT_PHONE_DIGITS = "2043069"
-    const val RESTAURANT_WEB = "wabisabi"
+    /** your restaurant: start and end of every run (the city centre until it is set up) */
+    val RESTAURANT: LatLon get() = Region.restaurantPos ?: Region.city?.center ?: LatLon(52.37, 4.89)
+    val RESTAURANT_NAME: String get() = Region.restaurantName.ifEmpty { "the restaurant" }
+    /** the restaurant's address as printed in every receipt header (never a customer address); "" = unknown */
+    val RESTAURANT_POSTCODE: String get() = Region.restaurantPostcode
+    val RESTAURANT_HOUSENO: String get() = Region.restaurantHouseNo
+    val RESTAURANT_STREET: String get() = Region.restaurantStreet
+    val RESTAURANT_PHONE_DIGITS: String get() = Region.restaurantPhoneDigits
+    val RESTAURANT_WEB: String get() = Region.restaurantWeb
 
-    /** Address search is restricted to this municipality first (PDOK gemeentenaam). */
-    const val MUNICIPALITY = "Groningen"
+    /** Address search is restricted to this municipality first (PDOK gemeentenaam); "" = all of NL. */
+    val MUNICIPALITY: String get() = Region.city?.municipality ?: ""
 
     /** Handover time at each door, used in ETA/urgency. */
     const val SERVICE_S = 60.0

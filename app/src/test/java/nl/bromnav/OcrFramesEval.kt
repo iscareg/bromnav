@@ -10,6 +10,7 @@ import java.io.File
  * Compares the parser now with what the app parsed live (stored in the frame file).
  */
 class OcrFramesEval {
+    init { TestRegion.wabiSabi() }
     @Test fun shiftFrames() {
         val truthFile = System.getenv("BROMNAV_OCR_TRUTH")?.let { File(it) }
         assumeTrue(truthFile?.exists() == true)

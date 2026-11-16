@@ -9,6 +9,7 @@ import java.io.File
 
 /** Travel-time matrix + ordering with the real engine (skipped without routing data). */
 class PlannerTest {
+    init { TestRegion.wabiSabi() }
     private val home = File(System.getProperty("user.home"), "bromnav")
     private val seg = File(home, "data/segments")
     private lateinit var planner: Planner

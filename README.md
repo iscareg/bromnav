@@ -89,6 +89,16 @@ Groningen area, so it works without a PC and without mobile data.
 - **Update maps from internet** (☰): fresh routing data from brouter.de, and a fresh map cut out
   of the public [Protomaps](https://protomaps.com) world build directly on the phone.
 
+## Branches
+
+- `universal`: any of 22 Dutch cities and any restaurant. On first start you choose the city
+  (Settings → City & offline maps later). The app shows what it needs on the phone: routing tiles
+  (server size), map (exact, from the PMTiles directories), places and addresses. Then it downloads
+  them. The first time delivery mode opens, you set up your restaurant (search by name or address;
+  optional phone / website as printed on the receipts, so its header is never taken for a customer).
+- `wabisabi`: Groningen and Wabi-Sabi built in (the version used on the shifts).
+- `main`: the last pushed state before the UI redesign.
+
 ## UI (branch `ui-redesign`)
 
 Rebuilt on Material Components (Material 3 theme, light and dark) with libraries from

@@ -16,7 +16,8 @@ object PdokGeocoder {
 
     /** Searches the delivery municipality first; falls back to all of NL if nothing matches. */
     fun search(q: String, near: LatLon = Config.RESTAURANT, rows: Int = 8): List<Address> {
-        val local = query(q, near, rows, "&fq=" + URLEncoder.encode("gemeentenaam:${Config.MUNICIPALITY}", "UTF-8"))
+        if (Config.MUNICIPALITY.isEmpty()) return query(q, near, rows, "")
+        val local = query(q, near, rows, "&fq=" + URLEncoder.encode("gemeentenaam:\"${Config.MUNICIPALITY}\"", "UTF-8"))
         return local.ifEmpty { query(q, near, rows, "") }
     }
 
